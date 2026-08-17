@@ -1,0 +1,20 @@
+{
+  "name": "@heisei/api",
+  "version": "0.1.0",
+  "private": true,
+  "scripts": {
+    "dev": "wrangler dev src/index.ts",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@heisei/database": "workspace:*",
+    "@heisei/domain": "workspace:*",
+    "@heisei/validation": "workspace:*",
+    "hono": "^4.4.0"
+  },
+  "devDependencies": {
+    "@cloudflare/workers-types": "^4.20240529.0",
+    "typescript": "^5.4.5",
+    "wrangler": "^3.57.2"
+  }
+}

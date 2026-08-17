@@ -1,0 +1,29 @@
+{
+  "expo": {
+    "name": "HEISEI",
+    "slug": "heisei-app",
+    "version": "1.0.0",
+    "orientation": "portrait",
+    "icon": "./assets/icon.png",
+    "userInterfaceStyle": "light",
+    "splash": {
+      "image": "./assets/splash.png",
+      "resizeMode": "contain",
+      "backgroundColor": "#F2F4F7"
+    },
+    "ios": {
+      "supportsTablet": true,
+      "bundleIdentifier": "jp.co.satoworks.heisei"
+    },
+    "android": {
+      "adaptiveIcon": {
+        "foregroundImage": "./assets/adaptive-icon.png",
+        "backgroundColor": "#F2F4F7"
+      },
+      "package": "jp.co.satoworks.heisei"
+    },
+    "web": {
+      "favicon": "./assets/favicon.png"
+    }
+  }
+}
