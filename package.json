@@ -5,7 +5,8 @@
     "build": "turbo run build",
     "dev": "turbo run dev",
     "lint": "turbo run lint",
-    "typecheck": "turbo run typecheck"
+    "typecheck": "turbo run typecheck",
+    "setup:cloud": "bash scripts/setup-cloud.sh"
   },
   "packageManager": "pnpm@11.20.0",
   "devDependencies": {
@@ -13,6 +14,6 @@
     "typescript": "^5.4.5"
   },
   "engines": {
-    "node": ">=18.0.0"
+    "node": ">=22.13.0"
   }
 }
