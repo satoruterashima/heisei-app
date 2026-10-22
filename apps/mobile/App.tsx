@@ -1,7 +1,7 @@
 import React, { useState } from 'react';
 import { StyleSheet, Text, View, SafeAreaView, ScrollView, TouchableOpacity } from 'react-native';
 import { StatusBar } from 'expo-status-bar';
-import { HEISEI_COLORS } from '@heisei/domain';
+import { HEISEI_COLORS } from '@heisei/theme';
 import { Home, MessageSquare, Users, User, Menu } from 'lucide-react-native';
 
 export default function App() {
