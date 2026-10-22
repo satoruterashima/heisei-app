@@ -70,3 +70,23 @@ corepack pnpm --config.verifyDepsBeforeRun=warn run setup:cloud
 ## 本番・個人情報
 
 実運用前に認証、権限、通報、ブロック、AI監査、復旧、データ削除、バックアップ、規約、年齢確認、課金方式を検証します。秘密情報はリポジトリに追加しないでください。
+
+## 継続的な品質検証
+
+Node.jsは`.nvmrc`、pnpmは`packageManager`（11.20.0）に合わせます。依存導入後、ルートで次を実行します。CloudではREADME上記のCorepackキャッシュ指定も使用してください。
+
+```sh
+corepack pnpm --config.verifyDepsBeforeRun=warn typecheck
+corepack pnpm --config.verifyDepsBeforeRun=warn lint
+corepack pnpm --config.verifyDepsBeforeRun=warn test
+corepack pnpm --config.verifyDepsBeforeRun=warn build:check
+```
+
+- 型チェックは全9workspaceとテスト／Vitest設定が対象です。
+- ESLintの推奨ルールを全workspaceのTypeScript/TSXとテストに適用し、警告も失敗にします。型検査は別コマンドが担当します。
+- Vitestは`tests/`の投稿文字数境界、入力検証、API health/CORSをNodeで実行します。テスト0件は失敗です。APIテストはHonoのin-processリクエストで、外部DB・本番APIに接続しません。
+- `build:check`（`build`からも委譲）はWranglerの`--dry-run`でAPI Workerをローカルbundleします。アップロード・デプロイは行いません。
+- 共通パッケージはTypeScriptソースを直接公開しているため、架空の成果物を生成するbuild scriptは追加しません。型検査と利用側のbundle／テストで検証します。UIのMetro結合検証は未実施です。
+- ExpoのiOSネイティブビルド・実機確認はLinux CIでは**NOT_RUN**。画像アセットはIssue #3で管理し、TypeScriptやAPI検証を止めません。
+
+`.github/workflows/quality.yml`はLinux上でfrozen install、型チェック、Lint、テスト、API bundle、lockfile不変を検証します。PR・mainへのpush・品質基盤ブランチへのpush・手動起動が対象で、読取権限のみです。API bundle成功はCloudflare上の実行成功を保証しません。
