@@ -1,6 +1,6 @@
 # HEISEI-001 調査結果の保全
 
-状態: 調査記録（実装変更なし）  
+状態: 調査記録（実装変更なし）
 対象main: `157c645f3b3dcfeb5cfe2ec80f0fd8f716c7ed8b`
 
 この文書は、前回の `/workspace/heisei-001-results/report.md` が現環境で取得できたため、その内容とリポジトリ上の根拠を要約して保全する。元reportは推測で再現していない。
