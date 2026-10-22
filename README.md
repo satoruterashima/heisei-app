@@ -23,7 +23,7 @@ HEISEIは、18歳以上を対象とした、話題・趣味を通じて交流す
 
 ## 開発環境
 
-ルートの`package.json`はpnpmワークスペースとTurborepoを使用します。まずNode.jsとpnpmの互換性を確認してください。現時点のルート指定は`pnpm@11.20.0`と`node >=18`です。変更する場合は理由と影響を報告してください。
+ルートの`package.json`はpnpmワークスペースとTurborepoを使用します。まずNode.jsとpnpmの互換性を確認してください。現時点のルート指定は`pnpm@11.20.0`と`node >=22.13.0`です。変更する場合は理由と影響を報告してください。
 
 - インストール: `pnpm install --frozen-lockfile`
 - 型チェック: `pnpm typecheck`
