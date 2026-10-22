@@ -2,7 +2,7 @@
 
 HEISEIは、18歳以上を対象とした、話題・趣味を通じて交流するSNSです。141文字投稿、スレッド、コミュニティ、マイフレ、本日のトレンディなどを段階的に開発します。
 
-> **現在の状態（2026-10-22、GitHub上でのファイル確認）**: 開発初期のモノレポ／Expo試作画面／Honoヘルスチェック／DBスキーマ草案。SNS本体の主要フローが動作する段階ではありません。ビルド・実機テストは未実施です。
+> **現在の状態（2026-10-23）**: 開発初期のモノレポ／Expo試作画面／Honoヘルスチェック／DBスキーマ草案。SNS本体の主要フローは未実装です。TypeScript・Lint・単体テストとAPIのローカルbundleは検証済みですが、Expoネイティブビルド・Metro結合・実機テストは未実施です。
 
 ## 開発の入口
 
@@ -57,9 +57,9 @@ corepack pnpm --config.verifyDepsBeforeRun=warn run setup:cloud
 
 `verifyDepsBeforeRun=warn`はscript開始前の自動installを防ぎます。セットアップ本体は必ずfrozen installを実行し、失敗時は停止します。pnpm 11.20.0では導入後も`enableGlobalVirtualStore`に関する事前検査警告が出る場合があります。
 
-依存インストールの成功はアプリの型チェック・実機動作の成功を意味しません。既存のTypeScriptエラー、画像アセットの欠落、Lint・Test・Buildの未設定は別Issueで対応します。
+依存インストールの成功はアプリの実機動作の成功を意味しません。既存のTypeScriptエラーはFIX-02Aで解決済みです。Lint・単体テスト・API bundle検証はFIX-03で追加しました。Expo画像アセットの欠落と実機検証は別Issueで対応します。
 
-**注意**: 上記は既存スクリプトに基づく案内であり、成功確認済みのコマンドではありません。現存するパッケージの一部には`build`/`lint`スクリプトがありません。`apps/mobile/app.json`が参照する画像アセットも未確認です。実行結果を記録してから整備してください。
+**注意**: 上記の品質検証コマンドはCodex Cloud上でPASSと報告されていますが、これはExpoネイティブビルドやiOS実機テストのPASSを意味しません。`apps/mobile/app.json`が参照する画像アセット4点は未配置であり、Issue #3で対応します。
 
 ## 開発・ソース管理方針
 
