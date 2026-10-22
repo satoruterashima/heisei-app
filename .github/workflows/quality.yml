@@ -1,0 +1,41 @@
+name: Quality
+
+on:
+  push:
+    branches: [main, 'chore/heisei-000-quality-checks']
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  quality:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      CI: 'true'
+      TURBO_TELEMETRY_DISABLED: '1'
+      WRANGLER_SEND_METRICS: 'false'
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: .nvmrc
+      - name: Activate pinned Corepack and pnpm
+        run: |
+          npm install --global corepack@0.34.6
+          corepack enable
+          test "$(pnpm --version)" = '11.20.0'
+      - name: Frozen install
+        run: pnpm install --frozen-lockfile
+      - name: TypeScript (all workspaces and test configuration)
+        run: pnpm --config.verifyDepsBeforeRun=warn typecheck
+      - name: Lint (all workspace sources and tests)
+        run: pnpm --config.verifyDepsBeforeRun=warn lint
+      - name: Unit tests
+        run: pnpm --config.verifyDepsBeforeRun=warn test
+      - name: Worker bundle (local dry run)
+        run: pnpm --config.verifyDepsBeforeRun=warn build:check
+      - name: Ensure checks preserve lockfile
+        run: git diff --exit-code -- pnpm-lock.yaml
