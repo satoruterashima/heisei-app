@@ -26,6 +26,14 @@
 - [HEISEI-001](issues/HEISEI-001-baseline-audit.md): Codexへ最初に依頼する作業。
 - [AI運営追加要件](moderation/requirements-draft.md): 非AI監査＋必要時AI、可逆的処分、異議申し立て。
 - [未決定事項](decisions/open-questions.md): 承認されるまで実装値を固定しない論点。
+- [HEISEI-001調査保全](audits/heisei-001-findings.md): コード根拠付きの調査結果と仕様差分。
+- [ADR-0001](adr/0001-ios-first-proposal.md): iOS先行構成の提案（DRAFT）。
+- [認証・権限マトリクス](auth/verification-and-permission-matrix.md): L0〜L4、会員、状態、関係による判定。
+- [セッション・アカウント](auth/session-and-account-lifecycle.md): SecureStore、失効、退会、管理者MFA。
+- [API・DB信頼境界](architecture/api-db-trust-boundaries.md): Expo、Hono、Supabase、PostgreSQLの責務。
+- [DB概念設計](architecture/data-model-proposal.md): 初期テーブル、制約、migration方針。
+- [認証・安全API契約](api/auth-and-safety-contracts.md): エンドポイント、形式、エラー契約。
+- [認証・権限テスト計画](testing/auth-permission-test-plan.md): API、DB、iOSの受入テスト。
 
 ## 範囲と技術方針の注意
 

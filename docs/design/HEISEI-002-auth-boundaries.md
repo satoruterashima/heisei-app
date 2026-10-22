@@ -90,6 +90,8 @@ HonoのAPI契約を`packages/api-client`へ型付きで公開し、Web/将来の
 
 ## 6. 次の実装Issue
 
+詳細な補足は、[HEISEI-001調査保全](../audits/heisei-001-findings.md)、[iOS先行ADR](../adr/0001-ios-first-proposal.md)、[認証・権限マトリクス](../auth/verification-and-permission-matrix.md)、[セッション設計](../auth/session-and-account-lifecycle.md)、[信頼境界](../architecture/api-db-trust-boundaries.md)、[DB概念設計](../architecture/data-model-proposal.md)、[API契約](../api/auth-and-safety-contracts.md)、[テスト計画](../testing/auth-permission-test-plan.md)を参照する。
+
 ### HEISEI-003（P0）認証・権限基盤の縦断実装
 
 対象: Expoのメールログインcallback、Auth adapter、Hono JWT middleware、L0〜L2プロフィール状態、最小profiles/verifications/settings migration。
