@@ -32,6 +32,7 @@ psql_file() {
 psql_file < "$repo_root/packages/database/drizzle/0000_baseline_profiles.sql" >/dev/null
 psql_file < "$repo_root/packages/database/drizzle/0000_auth_foundation.sql" >/dev/null
 psql_file < "$repo_root/packages/database/drizzle/roles.sql" >/dev/null
+echo "PASS: initial migration and role grants applied"
 
 psql_file <<'SQL' >/dev/null
 CREATE ROLE heisei_app_login LOGIN PASSWORD 'local-only-app' NOSUPERUSER NOBYPASSRLS;
@@ -52,13 +53,18 @@ INSERT INTO user_verifications (user_id, kind, status, verification_version)
 VALUES ('00000000-0000-4000-8000-000000000001', 'email_verified', 'verified', 'r2-test');
 SQL
 
+echo "PASS: test users and non-privileged login roles created"
 roles_ok="$(psql_file -At <<'SQL'
 SELECT count(*) FROM pg_roles
 WHERE rolname IN ('heisei_app', 'heisei_staff', 'heisei_identity_writer', 'heisei_audit_writer')
   AND rolsuper = false AND rolbypassrls = false;
 SQL
 )"
-test "$roles_ok" = 4
+if [[ "$roles_ok" != "4" ]]; then
+  printf 'FAIL: expected 4 least-privileged roles; query result was [%s]\\n' "$roles_ok" >&2
+  exit 1
+fi
+echo "PASS: least-privileged roles present"
 
 expect_failure() {
   local label="$1"
