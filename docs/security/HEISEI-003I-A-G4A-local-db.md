@@ -16,7 +16,7 @@ G4-Aは、通報APIやG2/G3/G5のruntime統合を行わず、通報保存に必�
 
 ## 権限境界
 
-`heisei_report_writer` は `NOLOGIN`、`NOSUPERUSER`、`NOBYPASSRLS` とし、一般roleへreportsのmutation権限を付与しない。writerは自actor行のSELECT/INSERTと、idempotencyの`last_used_at`/`expires_at`だけの列限定UPDATE、監査のINSERTを持つ。fingerprint、key version、report参照、actor等は変更できない。`report_idempotency_touch(uuid)`は同じactorの行だけを更新し、期限を最終使用から30日に再計算する。RLSはtransaction-local `app.user_id`とserver-side actor行を一致させ、他actorの行を不可視にする。
+`heisei_report_writer` は `NOLOGIN`、`NOSUPERUSER`、`NOBYPASSRLS` とし、一般roleへreportsのmutation権限を付与しない。writerにはidempotencyの直接UPDATE権限を与えない。`heisei_report_ttl_writer`（`NOLOGIN`、`NOSUPERUSER`、`NOBYPASSRLS`、membershipなし）だけが2列のUPDATE権限を持ち、`SECURITY DEFINER`の`report_idempotency_touch(uuid)`がその権限を使用する。fingerprint、key version、report参照、actor等は関数引数にも更新対象にも含めない。関数は同じactorの行だけをDB時刻で更新し、期限を最終使用から30日に再計算する。RLSはtransaction-local `app.user_id`とserver-side actor行を一致させ、他actorの行を不可視にする。
 
 監査allowlistは `report.create`、rule version `003i-g4a`、actor一致、target/request_id必須に限定する。既存のblock/profile/audit writer policyは変更しない。
 

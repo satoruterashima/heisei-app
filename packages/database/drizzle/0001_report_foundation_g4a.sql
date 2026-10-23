@@ -7,9 +7,13 @@ BEGIN
   IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'heisei_report_writer') THEN
     CREATE ROLE heisei_report_writer NOLOGIN NOSUPERUSER NOBYPASSRLS;
   END IF;
+  IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'heisei_report_ttl_writer') THEN
+    CREATE ROLE heisei_report_ttl_writer NOLOGIN NOSUPERUSER NOBYPASSRLS;
+  END IF;
 END $$;
 
 ALTER ROLE heisei_report_writer NOLOGIN NOSUPERUSER NOBYPASSRLS;
+ALTER ROLE heisei_report_ttl_writer NOLOGIN NOSUPERUSER NOBYPASSRLS;
 
 CREATE TABLE IF NOT EXISTS reports (
   id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
@@ -116,8 +120,18 @@ CREATE TABLE IF NOT EXISTS report_idempotency (
   expires_at timestamptz NOT NULL,
   CONSTRAINT report_idempotency_scope_digest_length CHECK (octet_length(reporter_scope_digest) = 32),
   CONSTRAINT report_idempotency_payload_fingerprint_length CHECK (octet_length(payload_fingerprint) = 32),
-  CONSTRAINT report_idempotency_expiry_check CHECK (expires_at >= created_at)
+  CONSTRAINT report_idempotency_expiry_check CHECK (expires_at >= created_at),
+  CONSTRAINT report_idempotency_ttl_check CHECK (expires_at = last_used_at + interval '30 days')
 );
+
+DO $$
+BEGIN
+  BEGIN
+    ALTER TABLE report_idempotency ADD CONSTRAINT report_idempotency_ttl_check
+      CHECK (expires_at = last_used_at + interval '30 days');
+  EXCEPTION WHEN duplicate_object THEN NULL;
+  END;
+END $$;
 
 CREATE UNIQUE INDEX IF NOT EXISTS report_idempotency_reporter_scope_unique
   ON report_idempotency (reporter_user_id, reporter_scope_digest);
@@ -137,17 +151,20 @@ REVOKE ALL ON reports, report_idempotency FROM heisei_block_writer;
 
 REVOKE ALL ON reports, report_idempotency, audit_logs FROM heisei_report_writer;
 GRANT SELECT, INSERT ON reports, report_idempotency TO heisei_report_writer;
-GRANT UPDATE (last_used_at, expires_at) ON report_idempotency TO heisei_report_writer;
 GRANT INSERT ON audit_logs TO heisei_report_writer;
 
--- The writer has only column-scoped UPDATE privilege. This narrow invoker
--- function is owned by the writer role and can only refresh the two TTL columns for the
+REVOKE ALL ON reports, report_idempotency, audit_logs FROM heisei_report_ttl_writer;
+GRANT SELECT (id, reporter_user_id) ON report_idempotency TO heisei_report_ttl_writer;
+GRANT UPDATE (last_used_at, expires_at) ON report_idempotency TO heisei_report_ttl_writer;
+
+-- This narrow SECURITY DEFINER function is owned by a dedicated NOLOGIN,
+-- NOBYPASSRLS role and can only refresh the two TTL columns for the
 -- caller's actor-bound row. Fingerprints, key versions, report references,
 -- and actor ownership are not writable through this boundary.
 CREATE OR REPLACE FUNCTION report_idempotency_touch(p_id uuid)
 RETURNS boolean
 LANGUAGE plpgsql
-SECURITY INVOKER
+SECURITY DEFINER
 SET search_path = pg_catalog, public
 AS $$
 BEGIN
@@ -159,7 +176,7 @@ BEGIN
   RETURN FOUND;
 END;
 $$;
-ALTER FUNCTION report_idempotency_touch(uuid) OWNER TO heisei_report_writer;
+ALTER FUNCTION report_idempotency_touch(uuid) OWNER TO heisei_report_ttl_writer;
 REVOKE ALL ON FUNCTION report_idempotency_touch(uuid) FROM PUBLIC;
 GRANT EXECUTE ON FUNCTION report_idempotency_touch(uuid) TO heisei_report_writer;
 
@@ -176,18 +193,21 @@ DROP POLICY IF EXISTS report_idempotency_writer_select ON report_idempotency;
 CREATE POLICY report_idempotency_writer_select ON report_idempotency FOR SELECT
   USING (current_user = 'heisei_report_writer'
     AND reporter_user_id::text = current_setting('app.user_id', true));
+DROP POLICY IF EXISTS report_idempotency_ttl_writer_select ON report_idempotency;
+CREATE POLICY report_idempotency_ttl_writer_select ON report_idempotency FOR SELECT
+  USING (current_user = 'heisei_report_ttl_writer'
+    AND reporter_user_id::text = current_setting('app.user_id', true));
 DROP POLICY IF EXISTS report_idempotency_writer_insert ON report_idempotency;
 CREATE POLICY report_idempotency_writer_insert ON report_idempotency FOR INSERT
   WITH CHECK (current_user = 'heisei_report_writer'
     AND reporter_user_id::text = current_setting('app.user_id', true));
 DROP POLICY IF EXISTS report_idempotency_writer_update ON report_idempotency;
-CREATE POLICY report_idempotency_writer_update ON report_idempotency FOR UPDATE
-  USING (current_user = 'heisei_report_writer'
+DROP POLICY IF EXISTS report_idempotency_ttl_writer_update ON report_idempotency;
+CREATE POLICY report_idempotency_ttl_writer_update ON report_idempotency FOR UPDATE
+  USING (current_user = 'heisei_report_ttl_writer'
     AND reporter_user_id::text = current_setting('app.user_id', true))
-  WITH CHECK (current_user = 'heisei_report_writer'
-    AND reporter_user_id::text = current_setting('app.user_id', true)
-    AND expires_at >= last_used_at
-    AND expires_at <= last_used_at + interval '30 days');
+  WITH CHECK (current_user = 'heisei_report_ttl_writer'
+    AND reporter_user_id::text = current_setting('app.user_id', true));
 
 -- The writer may append only the report.create event for its verified actor.
 -- Atomic report+audit execution remains the responsibility of the future

@@ -432,6 +432,45 @@ SET ROLE heisei_report_writer;
 SET app.user_id = '00000000-0000-4000-8000-000000000001';
 UPDATE report_idempotency SET payload_fingerprint = decode(repeat('03', 32), 'hex');
 SQL
+expect_failure "report writer direct TTL UPDATE" run_as heisei_report_login <<'SQL'
+SET ROLE heisei_report_writer;
+SET app.user_id = '00000000-0000-4000-8000-000000000001';
+UPDATE report_idempotency SET last_used_at = now(), expires_at = now() + interval '365 days';
+SQL
+expect_failure "report writer key version UPDATE" run_as heisei_report_login <<'SQL'
+SET ROLE heisei_report_writer;
+SET app.user_id = '00000000-0000-4000-8000-000000000001';
+UPDATE report_idempotency SET fingerprint_key_version = 'hmac-v2';
+SQL
+expect_failure "report writer report reference UPDATE" run_as heisei_report_login <<'SQL'
+SET ROLE heisei_report_writer;
+SET app.user_id = '00000000-0000-4000-8000-000000000001';
+UPDATE report_idempotency SET report_id = gen_random_uuid();
+SQL
+
+ttl_role_attributes="$(psql_file -Atqc "SELECT rolsuper::int || ':' || rolbypassrls::int || ':' || rolcanlogin::int FROM pg_roles WHERE rolname = 'heisei_report_ttl_writer'")"
+test "$ttl_role_attributes" = '0:0:0'
+echo "PASS: TTL executor role is NOLOGIN/NOSUPERUSER/NOBYPASSRLS"
+ttl_memberships="$(psql_file -Atqc "SELECT count(*) FROM pg_auth_members m JOIN pg_roles r ON r.oid = m.member WHERE r.rolname = 'heisei_report_ttl_writer'")"
+test "$ttl_memberships" = 0
+echo "PASS: TTL executor role has no memberships"
+function_owner="$(psql_file -Atqc "SELECT r.rolname FROM pg_proc p JOIN pg_roles r ON r.oid = p.proowner WHERE p.oid = 'public.report_idempotency_touch(uuid)'::regprocedure")"
+test "$function_owner" = heisei_report_ttl_writer
+echo "PASS: TTL function owner is dedicated executor role"
+public_execute="$(psql_file -Atqc "SELECT has_function_privilege('heisei_app', 'public.report_idempotency_touch(uuid)', 'EXECUTE')")"
+report_writer_execute="$(psql_file -Atqc "SELECT has_function_privilege('heisei_report_writer', 'public.report_idempotency_touch(uuid)', 'EXECUTE')")"
+test "$public_execute" = f
+test "$report_writer_execute" = t
+echo "PASS: TTL function EXECUTE is not public and is writer-scoped"
+report_writer_ttl_update="$(psql_file -Atqc "SELECT has_column_privilege('heisei_report_writer', 'public.report_idempotency', 'last_used_at', 'UPDATE')")"
+ttl_role_ttl_update="$(psql_file -Atqc "SELECT has_column_privilege('heisei_report_ttl_writer', 'public.report_idempotency', 'last_used_at', 'UPDATE')")"
+ttl_payload_select="$(psql_file -Atqc "SELECT has_column_privilege('heisei_report_ttl_writer', 'public.report_idempotency', 'payload_fingerprint', 'SELECT')")"
+ttl_report_insert="$(psql_file -Atqc "SELECT has_table_privilege('heisei_report_ttl_writer', 'public.reports', 'INSERT')")"
+test "$report_writer_ttl_update" = f
+test "$ttl_role_ttl_update" = t
+test "$ttl_payload_select" = f
+test "$ttl_report_insert" = f
+echo "PASS: TTL executor has only required column UPDATE/identity SELECT privileges"
 
 idempotency_id="$(run_as heisei_report_login -At <<'SQL'
 SET ROLE heisei_report_writer;
