@@ -134,8 +134,11 @@ function isUuid(value: string): boolean {
   return /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(value);
 }
 
-function isDatabaseConstraintError(error: unknown, code: string): boolean {
-  return typeof error === 'object' && error !== null && 'code' in error && (error as { code?: unknown }).code === code;
+/** Only a missing target reference is masked; unrelated FK/audit errors remain failures. */
+function isUnknownBlockTarget(error: unknown): boolean {
+  if (typeof error !== 'object' || error === null) return false;
+  const pg = error as { code?: unknown; constraint?: unknown };
+  return pg.code === '23503' && pg.constraint === 'blocks_blocked_id_fkey';
 }
 
 /** Block mutations and their append-only audit event share one RLS-scoped transaction. */
@@ -158,7 +161,7 @@ export class PostgresBlockMutationStore implements BlockMutationStore {
     } catch (error) {
       // A missing target is intentionally indistinguishable from an accepted
       // block request. The transaction has already rolled back on FK failure.
-      if (isDatabaseConstraintError(error, '23503')) return;
+      if (isUnknownBlockTarget(error)) return;
       throw error;
     }
   }

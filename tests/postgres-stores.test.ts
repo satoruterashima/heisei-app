@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import { JwksJwtVerifier, type JwtVerifier } from '../packages/auth/src/index.js';
 import {
   PostgresBlockRelationStore,
+  PostgresBlockMutationStore,
   PostgresIdentityRecordStore,
   type PostgresQueryExecutor,
   type TrustedPostgresExecutor,
@@ -124,6 +125,39 @@ describe('PostgreSQL identity and block stores', () => {
     expect(seen[0].values).toEqual([subject]);
     expect(seen[1].sql).toContain('$2');
     expect(seen[1].values).toEqual([userId, target]);
+  });
+
+  it('masks only a missing block target FK while rejecting audit FK failures', async () => {
+    const actor = userId;
+    const target = '00000000-0000-4000-8000-000000000002';
+    const makePgError = (constraint: string) =>
+      Object.assign(new Error('foreign key violation'), { code: '23503', constraint });
+    const executorForConstraint = (failureAt: 'block' | 'audit', constraint: string): TrustedPostgresExecutor => ({
+      withAuthSubject: async (_subject, operation) => operation({ query: async () => ({ rows: [] }) }),
+      withUserId: async (_id, operation) => operation({ query: async () => ({ rows: [] }) }),
+      withBlockWriter: async (_id, operation) => operation({
+        query: async <Row extends Record<string, unknown>>(sql: string) => {
+          if ((failureAt === 'block' && sql.includes('INSERT INTO blocks')) ||
+              (failureAt === 'audit' && sql.includes('INSERT INTO audit_logs'))) {
+            throw makePgError(constraint);
+          }
+          return { rows: [{ block_id: '00000000-0000-4000-8000-000000000099', target_user_id: target }] as unknown as readonly Row[] };
+        },
+      }),
+    });
+    await expect(new PostgresBlockMutationStore(
+      executorForConstraint('block', 'blocks_blocked_id_fkey'),
+    ).blockOwn(actor, target, 'request-1')).resolves.toBeUndefined();
+    await expect(new PostgresBlockMutationStore(
+      executorForConstraint('audit', 'audit_logs_target_user_id_fkey'),
+    ).blockOwn(actor, target, 'request-2')).rejects.toMatchObject({
+      code: '23503', constraint: 'audit_logs_target_user_id_fkey',
+    });
+    await expect(new PostgresBlockMutationStore(
+      executorForConstraint('block', 'blocks_blocker_id_fkey'),
+    ).blockOwn(actor, target, 'request-3')).rejects.toMatchObject({
+      code: '23503', constraint: 'blocks_blocker_id_fkey',
+    });
   });
 
   it('integrates a real JWT with the session API and the identity store', async () => {
