@@ -43,6 +43,26 @@ describe('block mutation API', () => {
     expect(invalidDelete.status).toBe(400);
   });
 
+  it('normalizes UUID case before self-target validation and store calls', async () => {
+    const caseActor = '00000000-0000-4a00-8000-000000000001';
+    const caseTarget = '00000000-0000-4a00-8000-000000000002';
+    const blockOwn = vi.fn(async () => undefined);
+    const app = appFor({ ...activeL2, userId: caseActor }, { blockOwn, unblockOwn: vi.fn(async () => undefined), unblockTargetOwn: vi.fn(async () => undefined) });
+    const mixedTarget = caseTarget.replace('a', 'A');
+    expect((await app.request('/api/v1/blocks', {
+      method: 'POST', headers: { authorization: 'Bearer valid', 'content-type': 'application/json' },
+      body: JSON.stringify({ targetUserId: mixedTarget }),
+    })).status).toBe(202);
+    expect(blockOwn).toHaveBeenCalledWith(caseActor, caseTarget, expect.any(String));
+
+    const mixedSelf = caseActor.replace('a', 'A');
+    expect((await app.request('/api/v1/blocks', {
+      method: 'POST', headers: { authorization: 'Bearer valid', 'content-type': 'application/json' },
+      body: JSON.stringify({ targetUserId: mixedSelf }),
+    })).status).toBe(422);
+    expect(blockOwn).toHaveBeenCalledTimes(1);
+  });
+
   it('does not expose an unavailable target or another owner block', async () => {
     const store: BlockMutationStore = {
       blockOwn: vi.fn(async () => undefined),
