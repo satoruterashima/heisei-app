@@ -64,6 +64,35 @@ export function authMiddleware(options: AuthMiddlewareOptions): MiddlewareHandle
   };
 }
 
+/** Authenticate when a bearer token is supplied, while allowing an anonymous request through. */
+export function optionalAuthMiddleware(options: AuthMiddlewareOptions): MiddlewareHandler<{ Variables: AuthVariables }> {
+  return async (c, next) => {
+    const token = bearerToken(c.req.raw);
+    // Only a completely absent Authorization header may be treated as L0.
+    // A malformed or unsupported scheme is an authentication error.
+    if (!token) {
+      if (c.req.raw.headers.has('authorization')) return unauthorized(c, 'Invalid authorization header');
+      return next();
+    }
+    try {
+      const claims = await options.verifier.verify(token);
+      if (!claims || typeof claims.sub !== 'string' || !claims.sub.trim() || !Number.isFinite(claims.exp) || claims.exp <= Math.floor(Date.now() / 1000)) {
+        return unauthorized(c);
+      }
+      const identity = await options.identityLoader.load(claims.sub, claims);
+      if (!identity) return unauthorized(c, 'Identity is not available');
+      c.set('auth', { claims, identity });
+    } catch {
+      return unauthorized(c, 'Authentication failed');
+    }
+    return next();
+  };
+}
+
 export function getAuth(c: Context<{ Variables: AuthVariables }>): AuthContext {
   return c.get('auth');
+}
+
+export function getOptionalAuth(c: Context<{ Variables: AuthVariables }>): AuthContext | null {
+  return (c.get('auth') as AuthContext | undefined) ?? null;
 }
