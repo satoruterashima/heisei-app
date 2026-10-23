@@ -1,56 +1,15 @@
-import { execFileSync } from 'node:child_process';
-import { describe, expect, it } from 'vitest';
+import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { JwksJwtVerifier } from '../packages/auth/src/index.js';
 import { createApiAppWithDatabase } from '../apps/api/src/index.js';
 import { PostgresBlockRelationStore } from '../packages/database/src/index.js';
-import type { PostgresQueryExecutor, TrustedPostgresExecutor } from '../packages/database/src/index.js';
+import { createLocalTrustedPostgresExecutor } from '../packages/database/src/local-postgres-executor.js';
+import type { TrustedPostgresExecutor } from '../packages/database/src/index.js';
 
 const container = process.env.HEISEI_LOCAL_PG_CONTAINER;
+const databaseUrl = process.env.HEISEI_LOCAL_PG_URL;
 const subject = 'integration-subject-1';
 const userId = '00000000-0000-4000-8000-000000000001';
 const targetId = '00000000-0000-4000-8000-000000000002';
-
-function sqlLiteral(value: unknown): string {
-  if (typeof value !== 'string' || !/^[A-Za-z0-9._:/-]+$/.test(value)) throw new Error('test value is not a safe SQL literal');
-  return `'${value}'`;
-}
-
-function runPsql(sql: string): string {
-  if (!container) throw new Error('HEISEI_LOCAL_PG_CONTAINER is required');
-  return execFileSync('docker', [
-    'exec', '-i', container, 'psql', '-h', '127.0.0.1', '-q', '-A', '-t', '-F', '\t', '-P', 'null=\\N',
-    '-v', 'ON_ERROR_STOP=1', '-U', 'postgres', '-d', 'heisei_local',
-  ], { input: sql, encoding: 'utf8' });
-}
-
-function makeExecutor(): TrustedPostgresExecutor {
-  const run = async <T>(role: string, settings: Record<string, string>, operation: (query: PostgresQueryExecutor) => Promise<T>) => {
-    const query: PostgresQueryExecutor = {
-      query: async <Row extends Record<string, unknown>>(text: string, values: readonly unknown[]) => {
-        const rendered = text.replace(/\$(\d+)/g, (_match, index: string) => sqlLiteral(values[Number(index) - 1]));
-        const settingsSql = Object.entries(settings).map(([key, value]) => `SET LOCAL ${key} = ${sqlLiteral(value)};`).join('\n');
-        const output = runPsql(`BEGIN; SET LOCAL ROLE ${role};\n${settingsSql}\n${rendered};\nCOMMIT;`);
-        const rows = output.trim() ? output.trimEnd().split('\n').map((line) => line.split('\t')) : [];
-        const mapped = rows.map((columns) => {
-          if (text.includes('p.auth_subject')) {
-            return {
-              auth_subject: columns[0] === '\\N' ? null : columns[0], user_id: columns[1], auth_level: Number(columns[2]),
-              membership: columns[3], roles_json: columns[4], account_status: columns[5],
-              verification_kind: columns[6] === '\\N' ? null : columns[6], verification_status: columns[7] === '\\N' ? null : columns[7],
-            } as unknown as Row;
-          }
-          return { blocked_by_actor: columns[0] === 't', blocked_by_target: columns[1] === 't' } as unknown as Row;
-        });
-        return { rows: mapped } as { rows: readonly Row[] };
-      },
-    };
-    return operation(query);
-  };
-  return {
-    withAuthSubject: (value, operation) => run('heisei_identity_writer', { 'app.auth_subject': value }, operation),
-    withUserId: (value, operation) => run('heisei_app', { 'app.user_id': value }, operation),
-  };
-}
 
 async function signedToken(tokenSubject = subject): Promise<{ verifier: JwksJwtVerifier; token: string }> {
   const pair = await crypto.subtle.generateKey(
@@ -78,10 +37,20 @@ async function signedToken(tokenSubject = subject): Promise<{ verifier: JwksJwtV
   };
 }
 
-describe.skipIf(!container)('real JWT → Hono → isolated PostgreSQL', () => {
+describe.skipIf(!container || !databaseUrl)('real JWT → Hono → isolated PostgreSQL', () => {
+  let executor: TrustedPostgresExecutor;
+
+  beforeAll(async () => {
+    executor = await createLocalTrustedPostgresExecutor({ connectionString: databaseUrl, max: 2 });
+  });
+
+  afterAll(async () => {
+    await (executor as { close?: () => Promise<void> }).close?.();
+  });
+
   it('returns the identity loaded through RLS-scoped PostgreSQL', async () => {
     const { verifier, token } = await signedToken();
-    const response = await createApiAppWithDatabase({ verifier, executor: makeExecutor() }).request('/api/v1/session', {
+    const response = await createApiAppWithDatabase({ verifier, executor }).request('/api/v1/session', {
       headers: { authorization: `Bearer ${token}` },
     });
     expect(response.status).toBe(200);
@@ -90,7 +59,7 @@ describe.skipIf(!container)('real JWT → Hono → isolated PostgreSQL', () => {
 
   it('rejects unknown subject and insufficient evidence without leaking DB state', async () => {
     const { verifier, token } = await signedToken('unknown-subject');
-    const response = await createApiAppWithDatabase({ verifier, executor: makeExecutor() }).request('/api/v1/session', {
+    const response = await createApiAppWithDatabase({ verifier, executor }).request('/api/v1/session', {
       headers: { authorization: `Bearer ${token}` },
     });
     expect(response.status).toBe(401);
@@ -99,7 +68,7 @@ describe.skipIf(!container)('real JWT → Hono → isolated PostgreSQL', () => {
 
   it('rejects a known subject with missing verification evidence', async () => {
     const { verifier, token } = await signedToken('integration-subject-2');
-    const response = await createApiAppWithDatabase({ verifier, executor: makeExecutor() }).request('/api/v1/session', {
+    const response = await createApiAppWithDatabase({ verifier, executor }).request('/api/v1/session', {
       headers: { authorization: `Bearer ${token}` },
     });
     expect(response.status).toBe(401);
@@ -109,7 +78,46 @@ describe.skipIf(!container)('real JWT → Hono → isolated PostgreSQL', () => {
   });
 
   it('reads both block directions through the same isolated executor', async () => {
-    const result = await new PostgresBlockRelationStore(makeExecutor()).findBetween(userId, targetId);
+    const result = await new PostgresBlockRelationStore(executor).findBetween(userId, targetId);
     expect(result).toEqual({ blockedByActor: true, blockedByTarget: true });
+  });
+
+  it('does not leak transaction-local role or RLS settings across reused connections', async () => {
+    const observed = await executor.withUserId(userId, async (query) => {
+      const result = await query.query<{ role: string; user_id: string | null }>(
+        "SELECT current_user AS role, current_setting('app.user_id', true) AS user_id",
+        [],
+      );
+      return result.rows[0];
+    });
+    expect(observed).toEqual({ role: 'heisei_app', user_id: userId });
+    const next = await executor.withUserId(targetId, async (query) => {
+      const result = await query.query<{ role: string; user_id: string | null }>(
+        "SELECT current_user AS role, current_setting('app.user_id', true) AS user_id",
+        [],
+      );
+      return result.rows[0];
+    });
+    expect(next).toEqual({ role: 'heisei_app', user_id: targetId });
+  });
+
+  it('rolls back and releases a connection after a failed operation', async () => {
+    await expect(executor.withUserId(userId, async () => { throw new Error('expected failure'); })).rejects.toThrow('expected failure');
+    const result = await executor.withUserId(targetId, async (query) => {
+      const rows = await query.query<{ user_id: string }>('SELECT id::text AS user_id FROM profiles ORDER BY id', []);
+      return rows.rows;
+    });
+    expect(result).toEqual([{ user_id: targetId }]);
+  });
+
+  it('keeps transaction-local identity isolated for concurrent requests', async () => {
+    const read = (id: string) => executor.withUserId(id, async (query) => {
+      const result = await query.query<{ user_id: string | null }>(
+        "SELECT current_setting('app.user_id', true) AS user_id, pg_sleep(0.05)",
+        [],
+      );
+      return result.rows[0]?.user_id;
+    });
+    await expect(Promise.all([read(userId), read(targetId)])).resolves.toEqual([userId, targetId]);
   });
 });

@@ -12,7 +12,7 @@ trap 'docker rm -f "$container" >/dev/null 2>&1 || true' EXIT
 started=0
 for attempt in 1 2 3; do
   echo "INFO: isolated PostgreSQL container start attempt $attempt"
-  if docker run --name "$container" -e POSTGRES_PASSWORD=local-only-password -e POSTGRES_DB=heisei_local -d postgres:16-alpine >/dev/null; then
+  if docker run --name "$container" -p 127.0.0.1::5432 -e POSTGRES_PASSWORD=local-only-password -e POSTGRES_DB=heisei_local -d postgres:16-alpine >/dev/null; then
     started=1
     break
   fi
@@ -43,6 +43,8 @@ psql_file < "$repo_root/packages/database/drizzle/0000_baseline_profiles.sql" >/
 psql_file < "$repo_root/packages/database/drizzle/0000_auth_foundation.sql" >/dev/null
 psql_file < "$repo_root/packages/database/drizzle/roles.sql" >/dev/null
 psql_file <<'SQL' >/dev/null
+CREATE ROLE heisei_test_login LOGIN PASSWORD 'local-test' NOSUPERUSER NOBYPASSRLS;
+GRANT heisei_app, heisei_identity_writer TO heisei_test_login;
 CREATE ROLE heisei_app_login LOGIN PASSWORD 'local-app' NOSUPERUSER NOBYPASSRLS;
 CREATE ROLE heisei_identity_login LOGIN PASSWORD 'local-identity' NOSUPERUSER NOBYPASSRLS;
 GRANT heisei_app TO heisei_app_login;
@@ -60,6 +62,12 @@ VALUES
  ('00000000-0000-4000-8000-000000000002', '00000000-0000-4000-8000-000000000001');
 SQL
 export HEISEI_LOCAL_PG_CONTAINER="$container"
+mapped_port="$(docker port "$container" 5432/tcp | sed -n 's/.*:\([0-9][0-9]*\)$/\1/p')"
+if [[ -z "$mapped_port" ]]; then
+  echo "FAIL: could not determine mapped PostgreSQL port" >&2
+  exit 1
+fi
+export HEISEI_LOCAL_PG_URL="postgresql://heisei_test_login:local-test@127.0.0.1:${mapped_port}/heisei_local"
 # Use the runner's existing Corepack/pnpm cache; never assume /workspace exists.
 pnpm --config.verifyDepsBeforeRun=warn exec vitest run tests/postgres-api.integration.test.ts
 echo "PASS: real JWT → Hono → isolated PostgreSQL integration"
