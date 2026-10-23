@@ -35,16 +35,27 @@ if [[ "$started" != "1" ]]; then
 fi
 echo "INFO: waiting for isolated PostgreSQL readiness"
 
-for _ in $(seq 1 30); do
-  if docker exec "$container" pg_isready -U postgres -d heisei_local >/dev/null 2>&1; then
+# The official Postgres image brings up a temporary Unix-socket-only server
+# during initdb, shuts it down, then starts the final TCP-listening server.
+# An unqualified pg_isready can report the transient server as healthy.
+ready=0
+for _ in $(seq 1 45); do
+  if docker exec "$container" pg_isready -h 127.0.0.1 -U postgres -d heisei_local >/dev/null 2>&1 &&
+     docker exec "$container" psql -h 127.0.0.1 -U postgres -d heisei_local -Atqc 'SELECT 1' >/dev/null 2>&1; then
+    ready=1
     break
   fi
   sleep 1
 done
-docker exec "$container" pg_isready -U postgres -d heisei_local >/dev/null
+if [[ "$ready" != "1" ]]; then
+  echo "FAIL: PostgreSQL did not become ready on TCP" >&2
+  docker logs --tail 60 "$container" >&2 || true
+  exit 1
+fi
+echo "INFO: PostgreSQL final TCP server is ready"
 
 psql_file() {
-  docker exec -i "$container" psql -q -v ON_ERROR_STOP=1 -U postgres -d heisei_local "$@"
+  docker exec -i "$container" psql -h 127.0.0.1 -q -v ON_ERROR_STOP=1 -U postgres -d heisei_local "$@"
 }
 
 psql_file < "$repo_root/packages/database/drizzle/0000_baseline_profiles.sql" >/dev/null
