@@ -6,7 +6,7 @@ G4-Aは、通報APIやG2/G3/G5のruntime統合を行わず、通報保存に必�
 
 ## 実装したlocal-only migration
 
-`packages/database/drizzle/0001_report_foundation_g4a.sql` を、baseline、auth foundation、`roles.sql` の後に適用する。
+`packages/database/drizzle/0002_report_foundation_g4a.sql` を、baseline、auth foundation、visibility foundation、`roles.sql` の後に適用する。
 
 - `reports`: server-generated UUID、server-side reporter、user target、category/version、`pending`、created/review-closed日時、暗号化本文envelopeを保持する。
 - 本文なしはciphertext、nonce、algorithm version、key version、AAD versionをすべてNULLにできる。本文ありは5項目すべて必須で、部分NULLはCHECK制約で拒否する。

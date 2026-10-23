@@ -16,7 +16,7 @@ normal application role cannot forge events. Authentication evidence and the
 privileged profile columns are written only through the separate
 `heisei_identity_writer` role.
 
-`0001_report_foundation_g4a.sql` is a separate G4-A local-only migration. It
+`0002_report_foundation_g4a.sql` is a separate G4-A local-only migration. It
 creates the reports and report-idempotency tables, the `heisei_report_writer`
 boundary, pending uniqueness, and report audit allowlisting. It does not create
 a report API or connect G2/G3/G5 runtime behavior.
@@ -34,7 +34,7 @@ psql "$LOCAL_DATABASE_URL" -v ON_ERROR_STOP=1 -f packages/database/drizzle/0000_
 psql "$LOCAL_DATABASE_URL" -v ON_ERROR_STOP=1 -f packages/database/drizzle/0000_auth_foundation.sql
 psql "$LOCAL_DATABASE_URL" -v ON_ERROR_STOP=1 -f packages/database/drizzle/roles.sql
 psql "$LOCAL_DATABASE_URL" -v ON_ERROR_STOP=1 -f packages/database/drizzle/0001_profile_visibility.sql
-psql "$LOCAL_DATABASE_URL" -v ON_ERROR_STOP=1 -f packages/database/drizzle/0001_report_foundation_g4a.sql
+psql "$LOCAL_DATABASE_URL" -v ON_ERROR_STOP=1 -f packages/database/drizzle/0002_report_foundation_g4a.sql
 psql "$LOCAL_DATABASE_URL" -v ON_ERROR_STOP=1 -f packages/database/drizzle/roles.sql
 ```
 

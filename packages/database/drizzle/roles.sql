@@ -64,9 +64,6 @@ REVOKE ALL ON blocks, audit_logs FROM heisei_block_writer;
 GRANT SELECT, INSERT, DELETE ON blocks TO heisei_block_writer;
 GRANT INSERT ON audit_logs TO heisei_block_writer;
 
-REVOKE ALL ON profiles, blocks FROM heisei_visibility_reader;
-GRANT SELECT ON blocks TO heisei_visibility_reader;
-
 -- The profile writer is the only role allowed to atomically update safe
 -- profile fields and append the corresponding audit event in one transaction.
 REVOKE ALL ON profiles, audit_logs FROM heisei_profile_writer;
@@ -88,5 +85,23 @@ BEGIN
     EXECUTE 'GRANT UPDATE (last_used_at, expires_at) ON report_idempotency TO heisei_report_ttl_writer';
     EXECUTE 'REVOKE ALL ON FUNCTION report_idempotency_touch(uuid) FROM PUBLIC';
     EXECUTE 'GRANT EXECUTE ON FUNCTION report_idempotency_touch(uuid) TO heisei_report_writer';
+  END IF;
+END $$;
+
+-- Re-apply visibility-reader grants only after the local visibility migration
+-- has added its column. This keeps this base role script safe before migration
+-- application while preserving the least-privilege reader boundary after it.
+DO $$
+BEGIN
+  IF to_regclass('public.profiles') IS NOT NULL
+    AND EXISTS (
+      SELECT 1 FROM information_schema.columns
+      WHERE table_schema = 'public'
+        AND table_name = 'profiles'
+        AND column_name = 'profile_visibility'
+    ) THEN
+    EXECUTE 'REVOKE ALL ON profiles, blocks FROM heisei_visibility_reader';
+    EXECUTE 'GRANT SELECT (id, account_status, profile_visibility) ON profiles TO heisei_visibility_reader';
+    EXECUTE 'GRANT SELECT ON blocks TO heisei_visibility_reader';
   END IF;
 END $$;

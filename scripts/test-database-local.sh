@@ -61,7 +61,8 @@ psql_file() {
 psql_file < "$repo_root/packages/database/drizzle/0000_baseline_profiles.sql" >/dev/null
 psql_file < "$repo_root/packages/database/drizzle/0000_auth_foundation.sql" >/dev/null
 psql_file < "$repo_root/packages/database/drizzle/roles.sql" >/dev/null
-psql_file < "$repo_root/packages/database/drizzle/0001_report_foundation_g4a.sql" >/dev/null
+psql_file < "$repo_root/packages/database/drizzle/0001_profile_visibility.sql" >/dev/null
+psql_file < "$repo_root/packages/database/drizzle/0002_report_foundation_g4a.sql" >/dev/null
 psql_file < "$repo_root/packages/database/drizzle/roles.sql" >/dev/null
 echo "PASS: initial migration and role grants applied"
 
@@ -71,13 +72,15 @@ CREATE ROLE heisei_staff_login LOGIN PASSWORD 'local-only-staff' NOSUPERUSER NOB
 CREATE ROLE heisei_identity_login LOGIN PASSWORD 'local-only-identity' NOSUPERUSER NOBYPASSRLS;
 CREATE ROLE heisei_audit_login LOGIN PASSWORD 'local-only-audit' NOSUPERUSER NOBYPASSRLS;
 CREATE ROLE heisei_report_login LOGIN PASSWORD 'local-only-report' NOSUPERUSER NOBYPASSRLS;
+CREATE ROLE heisei_visibility_login LOGIN PASSWORD 'local-only-visibility' NOSUPERUSER NOBYPASSRLS;
 GRANT heisei_app TO heisei_app_login;
 GRANT heisei_staff TO heisei_staff_login;
 GRANT heisei_identity_writer TO heisei_identity_login;
 GRANT heisei_audit_writer TO heisei_audit_login;
 GRANT heisei_report_writer TO heisei_report_login;
+GRANT heisei_visibility_reader TO heisei_visibility_login;
 GRANT USAGE ON SCHEMA public TO heisei_app_login, heisei_staff_login,
-  heisei_identity_login, heisei_audit_login, heisei_report_login;
+  heisei_identity_login, heisei_audit_login, heisei_report_login, heisei_visibility_login;
 INSERT INTO profiles (id, username, display_name, auth_subject, auth_level)
 VALUES
   ('00000000-0000-4000-8000-000000000001', 'r2-user-1', 'R2 User 1', 'r2-subject-1', 1),
@@ -590,6 +593,42 @@ rollback_count="$(psql_file -Atqc "SELECT count(*) FROM reports WHERE reporter_u
 test "$rollback_count" = 0
 echo "PASS: audit failure rolls back report INSERT"
 
+# Preflight only: a visibility decision made in one transaction is stale if
+# the target changes before a later report INSERT. This intentionally records
+# the G4-B boundary; no report repository is implemented here.
+psql_file <<'SQL' >/dev/null
+UPDATE profiles
+SET profile_visibility = 'public'
+WHERE id = '00000000-0000-4000-8000-000000000002';
+SQL
+visibility_decision_before_change="$(run_as heisei_visibility_login -At <<'SQL'
+SET ROLE heisei_visibility_reader;
+SET app.user_id = '00000000-0000-4000-8000-000000000001';
+SET app.visibility_target_id = '00000000-0000-4000-8000-000000000002';
+SELECT count(*) FROM profiles WHERE id = '00000000-0000-4000-8000-000000000002';
+SQL
+)"
+test "$visibility_decision_before_change" = 1
+psql_file <<'SQL' >/dev/null
+UPDATE profiles
+SET profile_visibility = 'private'
+WHERE id = '00000000-0000-4000-8000-000000000002';
+SQL
+run_as heisei_report_login <<'SQL' >/dev/null
+SET ROLE heisei_report_writer;
+SET app.user_id = '00000000-0000-4000-8000-000000000003';
+INSERT INTO reports (reporter_user_id, target_type, target_user_id, category, category_version)
+VALUES (current_setting('app.user_id')::uuid, 'user', '00000000-0000-4000-8000-000000000002', 'other', 'category-v1');
+SQL
+stale_visibility_report_count="$(psql_file -Atqc "SELECT count(*) FROM reports WHERE reporter_user_id = '00000000-0000-4000-8000-000000000003' AND target_user_id = '00000000-0000-4000-8000-000000000002'")"
+test "$stale_visibility_report_count" = 1
+psql_file <<'SQL' >/dev/null
+DELETE FROM reports
+WHERE reporter_user_id = '00000000-0000-4000-8000-000000000003'
+  AND target_user_id = '00000000-0000-4000-8000-000000000002';
+SQL
+echo "PASS: split visibility decision permits stale report insert (G4-B TOCTOU boundary reproduced)"
+
 plaintext_columns="$(psql_file -Atqc "SELECT count(*) FROM information_schema.columns WHERE table_schema = 'public' AND table_name = 'reports' AND column_name IN ('description', 'normalized_description')")"
 test "$plaintext_columns" = 0
 echo "PASS: reports has no plaintext description column"
@@ -609,7 +648,8 @@ SQL
 # Reapplying both SQL files must remain successful and idempotent.
 psql_file < "$repo_root/packages/database/drizzle/0000_auth_foundation.sql" >/dev/null
 psql_file < "$repo_root/packages/database/drizzle/roles.sql" >/dev/null
-psql_file < "$repo_root/packages/database/drizzle/0001_report_foundation_g4a.sql" >/dev/null
+psql_file < "$repo_root/packages/database/drizzle/0001_profile_visibility.sql" >/dev/null
+psql_file < "$repo_root/packages/database/drizzle/0002_report_foundation_g4a.sql" >/dev/null
 psql_file < "$repo_root/packages/database/drizzle/roles.sql" >/dev/null
 echo "PASS: migration first application and reapplication"
 echo "PASS: PostgreSQL RLS integration checks"
