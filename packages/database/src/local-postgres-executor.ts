@@ -9,10 +9,6 @@ import type { PostgresQueryExecutor, TrustedPostgresExecutor } from './postgres-
 export type LocalPostgresExecutorOptions = PoolConfig & {
   pool?: Pool;
   ownsPool?: boolean;
-  roles?: Partial<{
-    app: string;
-    identityWriter: string;
-  }>;
 };
 
 const DEFAULT_ROLES = {
@@ -50,7 +46,7 @@ export class LocalTrustedPostgresExecutor implements TrustedPostgresExecutor {
   private readonly roles: FixedRoles;
 
   constructor(options: LocalPostgresExecutorOptions) {
-    this.roles = { ...DEFAULT_ROLES, ...options.roles };
+    this.roles = DEFAULT_ROLES;
     quoteRole(this.roles.app);
     quoteRole(this.roles.identityWriter);
     if (options.pool) {
@@ -62,10 +58,16 @@ export class LocalTrustedPostgresExecutor implements TrustedPostgresExecutor {
   }
 
   async withAuthSubject<T>(subject: string, operation: (query: PostgresQueryExecutor) => Promise<T>): Promise<T> {
+    if (typeof subject !== 'string' || !subject || subject.trim() !== subject || subject.length > 255) {
+      throw new Error('invalid auth subject');
+    }
     return this.withTransaction(this.roles.identityWriter, [['app.auth_subject', subject]], operation);
   }
 
   async withUserId<T>(userId: string, operation: (query: PostgresQueryExecutor) => Promise<T>): Promise<T> {
+    if (typeof userId !== 'string' || !/^[0-9a-f]{8}-(?:[0-9a-f]{4}-){3}[0-9a-f]{12}$/iu.test(userId)) {
+      throw new Error('invalid user id');
+    }
     return this.withTransaction(this.roles.app, [['app.user_id', userId]], operation);
   }
 

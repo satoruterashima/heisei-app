@@ -101,6 +101,46 @@ describe.skipIf(!container || !databaseUrl)('real JWT → Hono → isolated Post
     expect(next).toEqual({ role: 'heisei_app', user_id: targetId });
   });
 
+  it('resets the DB role and prior identity setting on the same pooled backend', async () => {
+    if (!databaseUrl) throw new Error('local database not configured');
+    const single = await createLocalTrustedPostgresExecutor({ connectionString: databaseUrl, max: 1 });
+    try {
+      const first = await single.withUserId(userId, async (query) => {
+        const r = await query.query<{ pid: number; role: string }>(
+          'SELECT pg_backend_pid() AS pid, current_user AS role', [],
+        );
+        return r.rows[0];
+      });
+      const second = await single.withAuthSubject(subject, async (query) => {
+        const r = await query.query<{ pid: number; role: string; previous_user_id: string | null }>(
+          "SELECT pg_backend_pid() AS pid, current_user AS role, current_setting('app.user_id', true) AS previous_user_id", [],
+        );
+        return r.rows[0];
+      });
+      expect(second.pid).toBe(first.pid);
+      expect(first.role).toBe('heisei_app');
+      expect(second.role).toBe('heisei_identity_writer');
+      expect([null, '']).toContain(second.previous_user_id);
+      const third = await single.withUserId(targetId, async (query) => {
+        const r = await query.query<{ pid: number; role: string; previous_subject: string | null }>(
+          "SELECT pg_backend_pid() AS pid, current_user AS role, current_setting('app.auth_subject', true) AS previous_subject", [],
+        );
+        return r.rows[0];
+      });
+      expect(third.pid).toBe(first.pid);
+      expect(third.role).toBe('heisei_app');
+      expect([null, '']).toContain(third.previous_subject);
+    } finally {
+      await single.close();
+    }
+  });
+
+  it('rejects invalid RLS subjects and UUIDs before executing SQL', async () => {
+    await expect(executor.withAuthSubject(' ', async () => 1)).rejects.toThrow('invalid auth subject');
+    await expect(executor.withAuthSubject('x'.repeat(256), async () => 1)).rejects.toThrow('invalid auth subject');
+    await expect(executor.withUserId('not-uuid', async () => 1)).rejects.toThrow('invalid user id');
+  });
+
   it('rolls back and releases a connection after a failed operation', async () => {
     await expect(executor.withUserId(userId, async () => { throw new Error('expected failure'); })).rejects.toThrow('expected failure');
     const result = await executor.withUserId(targetId, async (query) => {

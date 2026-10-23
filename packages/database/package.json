@@ -10,11 +10,11 @@
   },
   "dependencies": {
     "@heisei/auth": "workspace:*",
-    "drizzle-orm": "^0.30.10",
-    "pg": "8.13.1"
+    "drizzle-orm": "^0.30.10"
   },
   "devDependencies": {
     "@types/pg": "8.10.9",
+    "pg": "8.13.1",
     "drizzle-kit": "^0.20.17",
     "typescript": "^5.4.5"
   }
