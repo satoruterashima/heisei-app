@@ -26,6 +26,16 @@ enumeration. Existing clients that already hold an owned block UUID remain
 compatible; a future owner-only block listing capability is a separate product
 decision and is intentionally not added here.
 
+`DELETE /api/v1/blocks/by-target/:targetUserId`
+
+`:targetUserId` is the internal profile UUID obtained from an already authorized
+application context. The endpoint does not list users or blocks. For every valid
+UUID, including an unknown user, an unblocked user, or a block owned by another
+actor, it returns the same `202` acceptance envelope. PostgreSQL RLS limits the
+actual deletion to a row created by the current actor, so the endpoint does not
+reveal whether the target exists or whether a relationship was present. Invalid
+UUID syntax is `400`; database or audit failures are a generic `500`.
+
 Real block changes append an audit event in the same transaction as the block
 change. No-op requests do not create an audit event. If an audit write fails,
 the block change is rolled back. Responses use `{ data, requestId }` or

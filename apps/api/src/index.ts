@@ -146,6 +146,22 @@ export function createApiApp(authOrOptions?: AuthMiddlewareOptions | ApiOptions)
     }
   });
 
+  app.delete('/api/v1/blocks/by-target/:targetUserId', async (c) => {
+    const { identity, claims } = getAuth(c);
+    const requestId = crypto.randomUUID();
+    const decision = authorize({ context: { identity, claims }, request: { minimumAuthLevel: 2 } });
+    if (!decision.allowed) return c.json({ error: { code: 'forbidden', message: 'Block operation is not allowed' }, requestId }, 403, { 'Cache-Control': 'no-store', 'X-Request-ID': requestId });
+    if (!options.blockStore) return c.json({ error: { code: 'service_unavailable', message: 'Block storage is not configured' }, requestId }, 503);
+    const targetUserId = c.req.param('targetUserId');
+    if (!isUuid(targetUserId)) return c.json({ error: { code: 'invalid_request', message: 'Target user id is invalid' }, requestId }, 400, { 'Cache-Control': 'no-store', 'X-Request-ID': requestId });
+    try {
+      await options.blockStore.unblockTargetOwn(identity.userId, targetUserId, requestId);
+      return c.json({ data: { accepted: true }, requestId }, 202, { 'Cache-Control': 'no-store', 'X-Request-ID': requestId });
+    } catch {
+      return c.json({ error: { code: 'internal_error', message: 'Block operation failed' }, requestId }, 500, { 'Cache-Control': 'no-store', 'X-Request-ID': requestId });
+    }
+  });
+
   app.delete('/api/v1/blocks/:id', async (c) => {
     const { identity, claims } = getAuth(c);
     const requestId = crypto.randomUUID();
