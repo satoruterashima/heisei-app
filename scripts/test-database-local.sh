@@ -10,12 +10,31 @@ if ! command -v docker >/dev/null 2>&1; then
 fi
 
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-container="heisei-db-r2-${PPID}"
+container="heisei-db-r2-${PPID}-${RANDOM}"
 db_password="heisei_local_only_password"
 trap 'docker rm -f "$container" >/dev/null 2>&1 || true' EXIT
 
-docker run --name "$container" -e POSTGRES_PASSWORD="$db_password" \
-  -e POSTGRES_DB=heisei_local -d postgres:16-alpine >/dev/null
+# Startup can fail transiently on freshly provisioned GitHub runners while the
+# daemon is pulling the image. Preserve diagnostics and retry only container
+# creation; failures in schema/RLS assertions must never be retried or hidden.
+started=0
+for attempt in 1 2 3; do
+  echo "INFO: PostgreSQL container startup attempt $attempt"
+  if docker run --name "$container" -e POSTGRES_PASSWORD="$db_password" \\
+    -e POSTGRES_DB=heisei_local -d postgres:16-alpine; then
+    started=1
+    break
+  fi
+  echo "WARN: Docker startup failed (attempt $attempt)" >&2
+  docker rm -f "$container" >/dev/null 2>&1 || true
+  sleep 2
+done
+if [[ "$started" != "1" ]]; then
+  echo "FAIL: unable to start isolated PostgreSQL container" >&2
+  docker info --format 'Docker Engine: {{.ServerVersion}}' >&2 || true
+  exit 1
+fi
+echo "INFO: waiting for isolated PostgreSQL readiness"
 
 for _ in $(seq 1 30); do
   if docker exec "$container" pg_isready -U postgres -d heisei_local >/dev/null 2>&1; then
