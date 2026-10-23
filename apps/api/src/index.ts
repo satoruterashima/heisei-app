@@ -2,7 +2,7 @@ import { Hono } from 'hono';
 import { cors } from 'hono/cors';
 import { AccessPolicyService, authMiddleware, authorize, isAccessOperation, optionalAuthMiddleware, type AccessPolicyInput, type AuthMiddlewareOptions, type AuthVariables, getAuth, getOptionalAuth } from '@heisei/auth';
 import type { JwtVerifier } from '@heisei/auth';
-import { DatabaseIdentityLoader, PostgresBlockMutationStore, PostgresBlockRelationStore, PostgresIdentityRecordStore, PostgresProfileStore, type BlockMutationStore, type ProfileStore, type TrustedPostgresExecutor } from '@heisei/database';
+import { DatabaseIdentityLoader, PostgresBlockMutationStore, PostgresBlockRelationStore, PostgresIdentityRecordStore, PostgresProfileStore, type BlockMutationStore, type ProfileRecord, type ProfileStore, type TrustedPostgresExecutor } from '@heisei/database';
 import { updateProfileSchema } from '@heisei/validation';
 
 export type DatabaseApiOptions = {
@@ -72,13 +72,18 @@ export function createApiApp(authOrOptions?: AuthMiddlewareOptions | ApiOptions)
     const requestId = crypto.randomUUID();
     const decision = authorize({ context: { identity, claims }, request: { minimumAuthLevel: 1 } });
     if (!decision.allowed) {
-      return c.json({ error: { code: 'forbidden', message: 'Profile access is not allowed' }, requestId }, 403);
+      return c.json({ error: { code: 'forbidden', message: 'Profile access is not allowed' }, requestId }, 403, { 'Cache-Control': 'no-store', 'X-Request-ID': requestId });
     }
     if (!options.profileStore) {
-      return c.json({ error: { code: 'service_unavailable', message: 'Profile storage is not configured' }, requestId }, 503);
+      return c.json({ error: { code: 'service_unavailable', message: 'Profile storage is not configured' }, requestId }, 503, { 'Cache-Control': 'no-store', 'X-Request-ID': requestId });
     }
-    const profile = await options.profileStore.findOwn(identity.userId).catch(() => null);
-    if (!profile || profile.userId !== identity.userId) return c.json({ error: { code: 'not_found', message: 'Profile not found' }, requestId }, 404, { 'Cache-Control': 'no-store' });
+    let profile: ProfileRecord | null;
+    try {
+      profile = await options.profileStore.findOwn(identity.userId);
+    } catch {
+      return c.json({ error: { code: 'internal_error', message: 'Profile lookup failed' }, requestId }, 500, { 'Cache-Control': 'no-store', 'X-Request-ID': requestId });
+    }
+    if (!profile || profile.userId !== identity.userId) return c.json({ error: { code: 'not_found', message: 'Profile not found' }, requestId }, 404, { 'Cache-Control': 'no-store', 'X-Request-ID': requestId });
     return c.json({ data: { profile: safeProfile(profile) }, requestId }, 200, { 'Cache-Control': 'no-store', 'X-Request-ID': requestId });
   });
   app.patch('/api/v1/profile', async (c) => {

@@ -21,6 +21,8 @@ describe('本人プロフィールAPI', () => {
   it('returns only the safe own-profile projection', async () => {
     const response = await app({ findOwn: async () => profile, updateOwn: async () => profile }).request('/api/v1/profile', { headers: { authorization: 'Bearer valid' } });
     expect(response.status).toBe(200);
+    expect(response.headers.get('cache-control')).toBe('no-store');
+    expect(response.headers.get('x-request-id')).toBeTruthy();
     const body = await response.json();
     expect(body.data.profile).toEqual(profile);
     expect(JSON.stringify(body)).not.toContain('authLevel');
@@ -63,6 +65,9 @@ describe('本人プロフィールAPI', () => {
     };
     const get = await app(store).request('/api/v1/profile', { headers: { authorization: 'Bearer valid' } });
     expect(get.status).toBe(404);
+    expect(get.headers.get('cache-control')).toBe('no-store');
+    expect(get.headers.get('x-request-id')).toBeTruthy();
+    expect(JSON.stringify(await get.json())).not.toContain('different');
     const patch = await app(store).request('/api/v1/profile', {
       method: 'PATCH', headers: { authorization: 'Bearer valid', 'content-type': 'application/json' },
       body: JSON.stringify({ displayName: 'test' }),
@@ -85,5 +90,31 @@ describe('本人プロフィールAPI', () => {
       method: 'PATCH', headers: { authorization: 'Bearer valid', 'content-type': 'application/json' }, body: JSON.stringify({ displayName: 'No commit' }),
     });
     expect(failed.status).toBe(500);
+  });
+
+  it('distinguishes absent profiles from database failures', async () => {
+    const absent = await app({ findOwn: async () => null, updateOwn: async () => profile }).request('/api/v1/profile', { headers: { authorization: 'Bearer valid' } });
+    expect(absent.status).toBe(404);
+    expect(absent.headers.get('cache-control')).toBe('no-store');
+    expect(absent.headers.get('x-request-id')).toBeTruthy();
+
+    const failed = await app({ findOwn: async () => { throw new Error('SQL password and connection details'); }, updateOwn: async () => profile }).request('/api/v1/profile', { headers: { authorization: 'Bearer valid' } });
+    expect(failed.status).toBe(500);
+    expect(failed.headers.get('cache-control')).toBe('no-store');
+    expect(failed.headers.get('x-request-id')).toBeTruthy();
+    expect(JSON.stringify(await failed.json())).not.toContain('SQL password');
+  });
+
+  it('returns safe status codes for missing storage and invalid JWT', async () => {
+    const unavailable = await createApiApp({
+      verifier: { verify: async () => claims },
+      identityLoader: { load: async () => identity },
+    }).request('/api/v1/profile', { headers: { authorization: 'Bearer valid' } });
+    expect(unavailable.status).toBe(503);
+    expect(unavailable.headers.get('cache-control')).toBe('no-store');
+    expect(unavailable.headers.get('x-request-id')).toBeTruthy();
+
+    const invalid = await app({ findOwn: async () => profile, updateOwn: async () => profile }).request('/api/v1/profile');
+    expect(invalid.status).toBe(401);
   });
 });

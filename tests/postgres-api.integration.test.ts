@@ -78,6 +78,26 @@ describe.skipIf(!container || !databaseUrl)('real JWT → Hono → isolated Post
     expect(adminSql(`SELECT count(*)::text FROM audit_logs WHERE actor_user_id = '${userId}'::uuid AND action = 'profile.update'`)).toBe('1');
   });
 
+  it('returns a safe 500 when the own-profile SELECT fails', async () => {
+    const failingExecutor: TrustedPostgresExecutor = {
+      withAuthSubject: executor.withAuthSubject.bind(executor),
+      withUserId: (id, operation) => executor.withUserId!(id, async (query) => operation({
+        query: async (text, values) => {
+          if (text.includes('FROM profiles') && text.includes('updated_at')) throw new Error('private SQL connection failure');
+          return query.query(text, values);
+        },
+      })),
+    };
+    const { verifier, token } = await signedToken();
+    const response = await createApiAppWithDatabase({ verifier, executor: failingExecutor }).request('/api/v1/profile', {
+      headers: { authorization: `Bearer ${token}` },
+    });
+    expect(response.status).toBe(500);
+    expect(response.headers.get('cache-control')).toBe('no-store');
+    expect(response.headers.get('x-request-id')).toBeTruthy();
+    expect(JSON.stringify(await response.json())).not.toContain('private SQL connection failure');
+  });
+
   it('rejects cross-user updates and privileged-column writes at RLS and SQL grant boundaries', async () => {
     await executor.withProfileWriter!(userId, async (query) => {
       const result = await query.query<{ user_id: string }>(
