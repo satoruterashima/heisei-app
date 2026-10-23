@@ -13,6 +13,10 @@ export type ApiOptions = {
   auth?: AuthMiddlewareOptions;
   accessPolicy?: AccessPolicyService;
   loadBlockRelation?: (actorUserId: string, targetUserId: string) => Promise<{ blockedByActor: boolean; blockedByTarget: boolean } | null>;
+  /** Trusted server-side checks; never populated from request query parameters. */
+  approveRelationship?: (actorUserId: string, targetUserId: string) => Promise<boolean>;
+  approvePrerequisites?: (actorUserId: string, operation: string) => Promise<boolean>;
+  approveScope?: (actorUserId: string, operation: string) => Promise<boolean>;
 };
 
 export function createApiApp(authOrOptions?: AuthMiddlewareOptions | ApiOptions) {
@@ -28,9 +32,14 @@ export function createApiApp(authOrOptions?: AuthMiddlewareOptions | ApiOptions)
     });
   });
 
-  const options: ApiOptions = authOrOptions && 'verifier' in authOrOptions
-    ? { auth: authOrOptions }
-    : (authOrOptions ?? {});
+  const candidate = authOrOptions as (AuthMiddlewareOptions & ApiOptions) | undefined;
+  const legacyAuth = candidate && 'verifier' in candidate
+    && !('auth' in candidate || 'accessPolicy' in candidate || 'loadBlockRelation' in candidate || 'approveRelationship' in candidate || 'approvePrerequisites' in candidate || 'approveScope' in candidate);
+  const options: ApiOptions = legacyAuth
+    ? { auth: candidate }
+    : (candidate && 'verifier' in candidate
+      ? { ...candidate, auth: { verifier: candidate.verifier, identityLoader: candidate.identityLoader } }
+      : (candidate ?? {}));
   const middlewareOptions: AuthMiddlewareOptions = options.auth ?? {
     verifier: { verify: async () => { throw new Error('Authentication is not configured'); } },
     identityLoader: { load: async () => null },
@@ -71,7 +80,16 @@ export function createApiApp(authOrOptions?: AuthMiddlewareOptions | ApiOptions)
         blockRelation = null;
       }
     }
-    const input = { context: authContext, targetUserId, blockRelation };
+    const relationshipApproved = targetUserId && authContext && options.approveRelationship
+      ? await options.approveRelationship(authContext.identity.userId, targetUserId).catch(() => false)
+      : undefined;
+    const prerequisitesApproved = operationParam && authContext && options.approvePrerequisites
+      ? await options.approvePrerequisites(authContext.identity.userId, operationParam).catch(() => false)
+      : undefined;
+    const approvedScope = operationParam && authContext && options.approveScope
+      ? await options.approveScope(authContext.identity.userId, operationParam).catch(() => false)
+      : undefined;
+    const input = { context: authContext, targetUserId, blockRelation, relationshipApproved, prerequisitesApproved, approvedScope };
     const data = operationParam
       ? { decision: policy.decide({ ...input, operation: operationParam }) }
       : { decisions: policy.decideAll(input) };

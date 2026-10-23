@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import {
   AccessPolicyService,
+  JwksJwtVerifier,
   type AuthIdentity,
   type JwtClaims,
 } from '../packages/auth/src/index.js';
@@ -29,6 +30,8 @@ describe('AccessPolicyService', () => {
       context: { claims, identity: { ...identity, authLevel: level } }, operation,
       targetUserId: operation === 'direct_message' && level >= 3 ? 'target' : undefined,
       blockRelation: operation === 'direct_message' && level >= 3 ? { blockedByActor: false, blockedByTarget: false } : undefined,
+      relationshipApproved: operation === 'direct_message' && level >= 3 ? true : undefined,
+      prerequisitesApproved: operation === 'direct_message' && level >= 3 ? true : undefined,
     });
     expect(result.allowed).toBe(allowed);
   });
@@ -47,9 +50,11 @@ describe('AccessPolicyService', () => {
 
   it('requires role, official membership, and explicit server-side MFA', () => {
     const official = { claims, identity: { ...identity, authLevel: 4 as const, membership: 'official' as const, roles: ['community_moderator'] as const } };
-    expect(service.decide({ context: official, operation: 'official_manage' })).toMatchObject({ allowed: true });
+    expect(service.decide({ context: official, operation: 'official_manage', approvedScope: true, prerequisitesApproved: true })).toMatchObject({ allowed: true });
     expect(service.decide({ context: { claims, identity: { ...identity, authLevel: 4, roles: ['member'] } }, operation: 'admin_manage', mfaVerified: true })).toMatchObject({ reason: 'role_required' });
     expect(service.decide({ context: { claims, identity: { ...identity, authLevel: 4, roles: ['admin'] } }, operation: 'admin_manage' })).toMatchObject({ reason: 'mfa_required' });
+    expect(service.decide({ context: official, operation: 'official_manage', prerequisitesApproved: true })).toMatchObject({ reason: 'scope_required' });
+    expect(service.decide({ context: official, operation: 'official_manage', approvedScope: true })).toMatchObject({ reason: 'approval_required' });
   });
 
   it('rejects unknown operations', () => {
@@ -76,6 +81,46 @@ describe('GET /api/v1/access', () => {
     expect(response.status).toBe(200);
     expect((await response.json()).data.decision).toMatchObject({ allowed: false, reason: 'relationship_unavailable' });
     expect((await app.request('/api/v1/access?operation=post', { headers: { authorization: 'Bearer forged' } })).status).toBe(401);
+  });
+
+  it.each([
+    ['missing', undefined],
+    ['basic', 'Basic token'],
+    ['malformed-bearer', 'Bearer a b'],
+  ])('rejects %s Authorization header', async (_name, authorization) => {
+    const app = createApiApp({ verifier: { verify: async () => claims }, identityLoader: { load: async () => identity } });
+    const response = await app.request('/api/v1/access?operation=post', authorization ? { headers: { authorization } } : undefined);
+    expect(response.status).toBe(authorization ? 401 : 200);
+    if (!authorization) expect((await response.json()).data.decision.reason).toBe('unauthenticated');
+  });
+
+  it('uses an actual RS256 JWT and trusted approvals for an access decision', async () => {
+    const pair = await crypto.subtle.generateKey(
+      { name: 'RSASSA-PKCS1-v1_5', modulusLength: 2048, publicExponent: new Uint8Array([1, 0, 1]), hash: 'SHA-256' },
+      true, ['sign', 'verify'],
+    );
+    const jwk = await crypto.subtle.exportKey('jwk', pair.publicKey);
+    const encode = (value: string | Uint8Array) => {
+      const bytes = typeof value === 'string' ? new TextEncoder().encode(value) : value;
+      let binary = '';
+      for (const byte of bytes) binary += String.fromCharCode(byte);
+      return btoa(binary).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/u, '');
+    };
+    const header = encode(JSON.stringify({ alg: 'RS256', kid: 'access-key', typ: 'JWT' }));
+    const payload = encode(JSON.stringify({ sub: claims.sub, iss: 'issuer', aud: 'audience', exp: Math.floor(Date.now() / 1000) + 300 }));
+    const input = `${header}.${payload}`;
+    const signature = await crypto.subtle.sign({ name: 'RSASSA-PKCS1-v1_5' }, pair.privateKey, new TextEncoder().encode(input));
+    const token = `${input}.${encode(new Uint8Array(signature))}`;
+    const app = createApiApp({
+      verifier: new JwksJwtVerifier({ issuer: 'issuer', audience: 'audience', jwksUri: 'https://issuer.test/jwks', fetcher: async () => new Response(JSON.stringify({ keys: [{ ...jwk, kid: 'access-key', alg: 'RS256' }] })) }),
+      identityLoader: { load: async () => ({ ...identity, authLevel: 3 }) },
+      loadBlockRelation: async () => ({ blockedByActor: false, blockedByTarget: false }),
+      approveRelationship: async () => true,
+      approvePrerequisites: async () => true,
+    });
+    const response = await app.request('/api/v1/access?operation=direct_message&targetUserId=target', { headers: { authorization: `Bearer ${token}` } });
+    expect(response.status).toBe(200);
+    expect((await response.json()).data.decision).toMatchObject({ allowed: true, reason: 'allowed' });
   });
 
   it('returns all decisions when operation is omitted', async () => {
