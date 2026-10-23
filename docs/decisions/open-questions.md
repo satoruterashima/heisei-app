@@ -17,6 +17,7 @@
 | 広告 | 具体的な挿入頻度 | 未確定 | 表示 |
 | デザイン | 先行登録テーマの期限・条件 | 未確定 | 特典配布 |
 | ブロック一覧の表示権限（#32 / #29） | プロフィール公開、相互マイフレ、コミュニティ等のどれをserver-sideの証明元にするか。任意UUID POSTから証明を作らない | **BLOCKED・承認待ち** | display grant/capability、GET一覧、RLS、監査、複数端末UX |
+| 通報受付（#34） | target型、理由/本文/証拠、重複、保存期間、開示範囲、case/status、AI連携 | **Phase B BLOCKED・正式仕様/承認待ち** | reports schema、専用writer/RLS、監査、POST契約、staff workflow |
 
 ## ルール
 - 未決定事項に依存する処分・決済・データ削除等は推測で完成扱いにしない。
