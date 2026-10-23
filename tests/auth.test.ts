@@ -10,14 +10,14 @@ import {
 } from '../packages/auth/src/index.js';
 
 const claims: JwtClaims = {
-  sub: 'user-1',
+  sub: 'provider-subject-1',
   iss: 'test-issuer',
   aud: 'test-audience',
   exp: Math.floor(Date.now() / 1000) + 300,
 };
 
 const identity: AuthIdentity = {
-  userId: 'user-1',
+  userId: '00000000-0000-0000-0000-000000000001',
   authLevel: 2,
   membership: 'free',
   roles: ['member'],
@@ -103,7 +103,7 @@ describe('Hono authentication middleware', () => {
           },
         },
         identityLoader: {
-          load: async (subject) => (subject === identity.userId ? identity : null),
+          load: async (subject) => (subject === claims.sub ? identity : null),
         },
       }),
     );
@@ -129,15 +129,32 @@ describe('Hono authentication middleware', () => {
     });
 
     expect(response.status).toBe(200);
-    expect(await response.json()).toEqual({ userId: 'user-1' });
+    expect(await response.json()).toEqual({ userId: '00000000-0000-0000-0000-000000000001' });
   });
-  it('rejects verified subjects that do not match the server-loaded identity', async () => {
+  it('accepts a trusted provider-subject to internal-UUID mapping', async () => {
     const app = new Hono<{ Variables: AuthVariables }>();
     app.use(
       '/protected',
       authMiddleware({
         verifier: { verify: async () => claims },
-        identityLoader: { load: async () => ({ ...identity, userId: 'different-user' }) },
+        identityLoader: { load: async (subject) => (subject === claims.sub ? identity : null) },
+      }),
+    );
+    app.get('/protected', (c) => c.json({ userId: c.get('auth').identity.userId }));
+    const response = await app.request('/protected', {
+      headers: { authorization: 'Bearer test-token' },
+    });
+    expect(response.status).toBe(200);
+    expect(await response.json()).toEqual({ userId: '00000000-0000-0000-0000-000000000001' });
+  });
+
+  it('rejects a subject that the trusted loader cannot map', async () => {
+    const app = new Hono<{ Variables: AuthVariables }>();
+    app.use(
+      '/protected',
+      authMiddleware({
+        verifier: { verify: async () => ({ ...claims, sub: 'another-provider-subject' }) },
+        identityLoader: { load: async (subject) => (subject === claims.sub ? identity : null) },
       }),
     );
     app.get('/protected', (c) => c.json({ ok: true }));

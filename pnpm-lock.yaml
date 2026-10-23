@@ -129,6 +129,9 @@ importers:
 
   packages/database:
     dependencies:
+      '@heisei/auth':
+        specifier: workspace:*
+        version: link:../auth
       drizzle-orm:
         specifier: ^0.30.10
         version: 0.30.10(@cloudflare/workers-types@4.20260702.1)(@types/react@18.3.31)(react@18.3.1)

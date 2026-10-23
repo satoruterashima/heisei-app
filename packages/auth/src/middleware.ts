@@ -43,7 +43,9 @@ export function authMiddleware(options: AuthMiddlewareOptions): MiddlewareHandle
       }
 
       const identity = await options.identityLoader.load(claims.sub, claims);
-      if (!identity || identity.userId !== claims.sub) {
+      // The provider subject is intentionally distinct from the internal UUID.
+      // The trusted identity loader owns that mapping and rejects unknown subjects.
+      if (!identity) {
         return unauthorized(c, 'Identity is not available');
       }
 
