@@ -20,8 +20,7 @@ trap 'docker rm -f "$container" >/dev/null 2>&1 || true' EXIT
 started=0
 for attempt in 1 2 3; do
   echo "INFO: PostgreSQL container startup attempt $attempt"
-  if docker run --name "$container" -e POSTGRES_PASSWORD="$db_password" \\
-    -e POSTGRES_DB=heisei_local -d postgres:16-alpine; then
+  if docker run --name "$container" -e POSTGRES_PASSWORD="$db_password" -e POSTGRES_DB=heisei_local -d postgres:16-alpine; then
     started=1
     break
   fi
