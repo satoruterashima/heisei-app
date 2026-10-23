@@ -261,6 +261,50 @@ VALUES (current_setting('app.user_id')::uuid, 'user', '00000000-0000-4000-8000-0
 SQL
 echo "PASS: report writer own report INSERT"
 
+expect_failure "invalid report category" run_as heisei_report_login <<'SQL'
+SET ROLE heisei_report_writer;
+SET app.user_id = '00000000-0000-4000-8000-000000000003';
+INSERT INTO reports (reporter_user_id, target_type, target_user_id, category, category_version)
+VALUES (current_setting('app.user_id')::uuid, 'user', '00000000-0000-4000-8000-000000000001', 'unknown', 'category-v1');
+SQL
+expect_failure "invalid report category version" run_as heisei_report_login <<'SQL'
+SET ROLE heisei_report_writer;
+SET app.user_id = '00000000-0000-4000-8000-000000000003';
+INSERT INTO reports (reporter_user_id, target_type, target_user_id, category, category_version)
+VALUES (current_setting('app.user_id')::uuid, 'user', '00000000-0000-4000-8000-000000000001', 'spam', 'category-v2');
+SQL
+
+expect_failure "invalid report nonce length" run_as heisei_report_login <<'SQL'
+SET ROLE heisei_report_writer;
+SET app.user_id = '00000000-0000-4000-8000-000000000003';
+INSERT INTO reports (reporter_user_id, target_type, target_user_id, category, category_version, description_ciphertext, description_nonce, encryption_algorithm_version, encryption_key_version, aad_version)
+VALUES (current_setting('app.user_id')::uuid, 'user', '00000000-0000-4000-8000-000000000001', 'spam', 'category-v1', decode(repeat('01', 16), 'hex'), decode(repeat('02', 11), 'hex'), 'aes-256-gcm-v1', 'enc-v1', 'aad-v1');
+SQL
+expect_failure "empty report ciphertext" run_as heisei_report_login <<'SQL'
+SET ROLE heisei_report_writer;
+SET app.user_id = '00000000-0000-4000-8000-000000000003';
+INSERT INTO reports (reporter_user_id, target_type, target_user_id, category, category_version, description_ciphertext, description_nonce, encryption_algorithm_version, encryption_key_version, aad_version)
+VALUES (current_setting('app.user_id')::uuid, 'user', '00000000-0000-4000-8000-000000000001', 'spam', 'category-v1', decode('', 'hex'), decode(repeat('02', 12), 'hex'), 'aes-256-gcm-v1', 'enc-v1', 'aad-v1');
+SQL
+expect_failure "unsupported encryption algorithm" run_as heisei_report_login <<'SQL'
+SET ROLE heisei_report_writer;
+SET app.user_id = '00000000-0000-4000-8000-000000000003';
+INSERT INTO reports (reporter_user_id, target_type, target_user_id, category, category_version, description_ciphertext, description_nonce, encryption_algorithm_version, encryption_key_version, aad_version)
+VALUES (current_setting('app.user_id')::uuid, 'user', '00000000-0000-4000-8000-000000000001', 'spam', 'category-v1', decode(repeat('01', 16), 'hex'), decode(repeat('02', 12), 'hex'), 'unknown', 'enc-v1', 'aad-v1');
+SQL
+expect_failure "unsupported report AAD version" run_as heisei_report_login <<'SQL'
+SET ROLE heisei_report_writer;
+SET app.user_id = '00000000-0000-4000-8000-000000000003';
+INSERT INTO reports (reporter_user_id, target_type, target_user_id, category, category_version, description_ciphertext, description_nonce, encryption_algorithm_version, encryption_key_version, aad_version)
+VALUES (current_setting('app.user_id')::uuid, 'user', '00000000-0000-4000-8000-000000000001', 'spam', 'category-v1', decode(repeat('01', 16), 'hex'), decode(repeat('02', 12), 'hex'), 'aes-256-gcm-v1', 'enc-v1', 'unknown');
+SQL
+expect_failure "empty encryption key version" run_as heisei_report_login <<'SQL'
+SET ROLE heisei_report_writer;
+SET app.user_id = '00000000-0000-4000-8000-000000000003';
+INSERT INTO reports (reporter_user_id, target_type, target_user_id, category, category_version, description_ciphertext, description_nonce, encryption_algorithm_version, encryption_key_version, aad_version)
+VALUES (current_setting('app.user_id')::uuid, 'user', '00000000-0000-4000-8000-000000000001', 'spam', 'category-v1', decode(repeat('01', 16), 'hex'), decode(repeat('02', 12), 'hex'), 'aes-256-gcm-v1', ' ', 'aad-v1');
+SQL
+
 own_report_count="$(run_as heisei_report_login -At <<'SQL'
 SET ROLE heisei_report_writer;
 SET app.user_id = '00000000-0000-4000-8000-000000000001';
@@ -383,11 +427,82 @@ SQL
 test "$null_report_reference_count" = 1
 echo "PASS: idempotency record supports nullable report reference"
 
-expect_failure "report writer idempotency UPDATE" run_as heisei_report_login <<'SQL'
+expect_failure "report writer fingerprint UPDATE" run_as heisei_report_login <<'SQL'
 SET ROLE heisei_report_writer;
 SET app.user_id = '00000000-0000-4000-8000-000000000001';
-UPDATE report_idempotency SET last_used_at = now();
+UPDATE report_idempotency SET payload_fingerprint = decode(repeat('03', 32), 'hex');
 SQL
+
+idempotency_id="$(run_as heisei_report_login -At <<'SQL'
+SET ROLE heisei_report_writer;
+SET app.user_id = '00000000-0000-4000-8000-000000000001';
+SELECT id FROM report_idempotency WHERE reporter_user_id = current_setting('app.user_id')::uuid;
+SQL
+)"
+before_fingerprint="$(run_as heisei_report_login -At <<SQL
+SET ROLE heisei_report_writer;
+SET app.user_id = '00000000-0000-4000-8000-000000000001';
+SELECT encode(payload_fingerprint, 'hex') FROM report_idempotency WHERE id = '$idempotency_id';
+SQL
+)"
+touch_result="$(run_as heisei_report_login -At <<SQL
+SET ROLE heisei_report_writer;
+SET app.user_id = '00000000-0000-4000-8000-000000000001';
+SELECT report_idempotency_touch('$idempotency_id');
+SQL
+)"
+test "$touch_result" = t
+touch_window="$(run_as heisei_report_login -At <<SQL
+SET ROLE heisei_report_writer;
+SET app.user_id = '00000000-0000-4000-8000-000000000001';
+SELECT extract(epoch FROM (expires_at - last_used_at))::bigint FROM report_idempotency WHERE id = '$idempotency_id';
+SQL
+)"
+after_fingerprint="$(run_as heisei_report_login -At <<SQL
+SET ROLE heisei_report_writer;
+SET app.user_id = '00000000-0000-4000-8000-000000000001';
+SELECT encode(payload_fingerprint, 'hex') FROM report_idempotency WHERE id = '$idempotency_id';
+SQL
+)"
+test "$touch_window" = 2592000
+test "$before_fingerprint" = "$after_fingerprint"
+echo "PASS: TTL touch updates only last_used_at/expires_at and preserves fingerprint"
+
+other_actor_touch="$(run_as heisei_report_login -At <<SQL
+SET ROLE heisei_report_writer;
+SET app.user_id = '00000000-0000-4000-8000-000000000002';
+SELECT report_idempotency_touch('$idempotency_id');
+SQL
+)"
+test "$other_actor_touch" = f
+echo "PASS: other actor cannot touch idempotency record"
+
+concurrent_touch_a="$(mktemp)"
+concurrent_touch_b="$(mktemp)"
+set +e
+run_as heisei_report_login >"$concurrent_touch_a" 2>&1 <<SQL &
+SET ROLE heisei_report_writer;
+SET app.user_id = '00000000-0000-4000-8000-000000000001';
+SELECT report_idempotency_touch('$idempotency_id');
+SQL
+concurrent_touch_pid_a=$!
+run_as heisei_report_login >"$concurrent_touch_b" 2>&1 <<SQL &
+SET ROLE heisei_report_writer;
+SET app.user_id = '00000000-0000-4000-8000-000000000001';
+SELECT report_idempotency_touch('$idempotency_id');
+SQL
+concurrent_touch_pid_b=$!
+wait "$concurrent_touch_pid_a"
+concurrent_touch_status_a=$?
+wait "$concurrent_touch_pid_b"
+concurrent_touch_status_b=$?
+set -e
+rm -f "$concurrent_touch_a" "$concurrent_touch_b"
+if [[ "$concurrent_touch_status_a" != "0" ]] || [[ "$concurrent_touch_status_b" != "0" ]]; then
+  echo "FAIL: concurrent idempotency touches did not both succeed" >&2
+  exit 1
+fi
+echo "PASS: concurrent same-key TTL touches succeed without fingerprint rewrite"
 
 expect_failure "report audit non-allowlisted event" run_as heisei_report_login <<'SQL'
 SET ROLE heisei_report_writer;
