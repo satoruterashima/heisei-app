@@ -171,6 +171,15 @@ test "$staff_verification_out_scope" = 0
 echo "PASS: staff out-of-scope verification denied"
 
 # Identity writer is the only non-owner path that can create/update evidence.
+identity_subject_count="$(run_as heisei_identity_login -At <<'SQL'
+SET ROLE heisei_identity_writer;
+SET app.auth_subject = 'r2-subject-1';
+SELECT count(*) FROM profiles WHERE auth_subject = current_setting('app.auth_subject');
+SQL
+)"
+test "$identity_subject_count" = 1
+echo "PASS: identity writer subject lookup is role-scoped"
+
 run_as heisei_identity_login <<'SQL' >/dev/null
 SET ROLE heisei_identity_writer;
 SET app.user_id = '00000000-0000-4000-8000-000000000001';

@@ -1,6 +1,13 @@
 import { Hono } from 'hono';
 import { cors } from 'hono/cors';
 import { authMiddleware, type AuthMiddlewareOptions, type AuthVariables, getAuth } from '@heisei/auth';
+import type { JwtVerifier } from '@heisei/auth';
+import { DatabaseIdentityLoader, PostgresIdentityRecordStore, type TrustedPostgresExecutor } from '@heisei/database';
+
+export type DatabaseApiOptions = {
+  verifier: JwtVerifier;
+  executor: TrustedPostgresExecutor;
+};
 
 export function createApiApp(auth?: AuthMiddlewareOptions) {
   const app = new Hono<{ Variables: AuthVariables }>();
@@ -39,6 +46,12 @@ export function createApiApp(auth?: AuthMiddlewareOptions) {
   });
 
   return app;
+}
+
+/** Wires the provider-neutral JWT verifier to the RLS-scoped identity adapter. */
+export function createApiAppWithDatabase(options: DatabaseApiOptions) {
+  const identityLoader = new DatabaseIdentityLoader(new PostgresIdentityRecordStore(options.executor));
+  return createApiApp({ verifier: options.verifier, identityLoader });
 }
 
 const app = createApiApp();

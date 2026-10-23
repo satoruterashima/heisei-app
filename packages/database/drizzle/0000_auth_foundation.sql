@@ -84,7 +84,8 @@ CREATE INDEX IF NOT EXISTS audit_logs_target_user_id_idx ON audit_logs(target_us
 CREATE INDEX IF NOT EXISTS audit_logs_created_at_idx ON audit_logs(created_at);
 
 -- The API sets these transaction-local settings through the dedicated roles:
--- app.user_id = authenticated profile UUID; app.staff_scope = one approved target UUID;
+-- app.user_id = authenticated profile UUID; app.auth_subject = the already
+-- verified provider subject during identity lookup; app.staff_scope = one approved target UUID;
 -- app.audit_actor_id = actor UUID for the trusted audit writer.
 ALTER TABLE profiles ENABLE ROW LEVEL SECURITY;
 ALTER TABLE user_verifications ENABLE ROW LEVEL SECURITY;
@@ -118,6 +119,10 @@ DROP POLICY IF EXISTS profiles_identity_select ON profiles;
 CREATE POLICY profiles_identity_select ON profiles FOR SELECT
   USING (current_user = 'heisei_identity_writer'
       AND id::text = current_setting('app.user_id', true));
+DROP POLICY IF EXISTS profiles_identity_subject_select ON profiles;
+CREATE POLICY profiles_identity_subject_select ON profiles FOR SELECT
+  USING (current_user = 'heisei_identity_writer'
+      AND auth_subject = current_setting('app.auth_subject', true));
 DROP POLICY IF EXISTS profiles_identity_update ON profiles;
 CREATE POLICY profiles_identity_update ON profiles FOR UPDATE
   USING (current_user = 'heisei_identity_writer'
@@ -136,6 +141,13 @@ DROP POLICY IF EXISTS user_verifications_identity_select ON user_verifications;
 CREATE POLICY user_verifications_identity_select ON user_verifications FOR SELECT
   USING (current_user = 'heisei_identity_writer'
       AND user_id::text = current_setting('app.user_id', true));
+DROP POLICY IF EXISTS user_verifications_identity_subject_select ON user_verifications;
+CREATE POLICY user_verifications_identity_subject_select ON user_verifications FOR SELECT
+  USING (current_user = 'heisei_identity_writer'
+      AND user_id IN (
+        SELECT id FROM profiles
+        WHERE auth_subject = current_setting('app.auth_subject', true)
+      ));
 DROP POLICY IF EXISTS user_verifications_identity_insert ON user_verifications;
 CREATE POLICY user_verifications_identity_insert ON user_verifications FOR INSERT
   WITH CHECK (current_user = 'heisei_identity_writer'

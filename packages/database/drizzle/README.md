@@ -20,6 +20,9 @@ The migration separates owner, staff, and identity-writer policies by database
 role. `app.user_id` and `app.staff_scope` are transaction-local values supplied
 only after trusted server authorization; setting a GUC never grants access on
 its own. The local role definitions are `NOSUPERUSER` and `NOBYPASSRLS`.
+Identity lookup uses the same identity-writer role with the verified
+`app.auth_subject` context; after the subject-to-UUID mapping, subsequent
+queries use `app.user_id`.
 
 ```sh
 psql "$LOCAL_DATABASE_URL" -v ON_ERROR_STOP=1 -f packages/database/drizzle/0000_baseline_profiles.sql
