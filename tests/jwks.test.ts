@@ -57,6 +57,11 @@ describe('JWKS JWT verifier', () => {
     ['wrong issuer', { overrides: { iss: 'https://attacker.example.test' } }],
     ['wrong audience', { overrides: { aud: 'other-service' } }],
     ['algorithm confusion', { header: { alg: 'HS256' } }],
+    ['none algorithm', { header: { alg: 'none' } }],
+    ['empty subject', { overrides: { sub: '' } }],
+    ['future issued-at', { overrides: { iat: Math.floor(Date.now() / 1000) + 600 } }],
+    ['invalid jti', { overrides: { jti: 5 } }],
+    ['missing kid', { header: { kid: '' } }],
   ] as const)('rejects %s', async (_label, options: { overrides?: Record<string, unknown>; header?: Record<string, unknown>; tamper?: boolean }) => {
     const key = await createKey('key-1');
     const verifier = new JwksJwtVerifier({
@@ -88,4 +93,43 @@ describe('JWKS JWT verifier', () => {
     await verifier.verify(rotated);
     expect(calls).toBe(2);
   });
+  it('limits JWKS refreshes for multiple missing key ids', async () => {
+    const key = await createKey('key-1');
+    let calls = 0;
+    const verifier = new JwksJwtVerifier({
+      issuer,
+      audience,
+      jwksUri: 'https://issuer.example.test/.well-known/jwks.json',
+      fetcher: async () => {
+        calls += 1;
+        return new Response(JSON.stringify({ keys: [key.jwk] }));
+      },
+    });
+    const unknown1 = await signToken(key.pair.privateKey, {}, { kid: 'missing-1' });
+    const unknown2 = await signToken(key.pair.privateKey, {}, { kid: 'missing-2' });
+    await expect(verifier.verify(unknown1)).rejects.toBeInstanceOf(JwtVerificationError);
+    await expect(verifier.verify(unknown2)).rejects.toBeInstanceOf(JwtVerificationError);
+    expect(calls).toBe(1);
+  });
+
+  it('rejects unknown keys, invalid JWKS material and oversized JWTs', async () => {
+    const key = await createKey('key-1');
+    const verifier = new JwksJwtVerifier({
+      issuer,
+      audience,
+      jwksUri: 'https://issuer.example.test/.well-known/jwks.json',
+      fetcher: async () => new Response(JSON.stringify({ keys: [{ kid: 'key-1', kty: 'oct', k: 'invalid' }] })),
+    });
+    await expect(verifier.verify(await signToken(key.pair.privateKey))).rejects.toBeInstanceOf(JwtVerificationError);
+    await expect(verifier.verify('a'.repeat(16_385))).rejects.toBeInstanceOf(JwtVerificationError);
+  });
+
+  it('requires a trusted HTTPS JWKS URL', () => {
+    expect(() => new JwksJwtVerifier({
+      issuer,
+      audience,
+      jwksUri: 'http://issuer.example.test/jwks',
+    })).toThrow('HTTPS');
+  });
+
 });

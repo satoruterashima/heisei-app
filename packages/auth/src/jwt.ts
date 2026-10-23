@@ -73,10 +73,16 @@ function toBytes(value: string): Uint8Array {
 export class JwksJwtVerifier implements JwtVerifier {
   private readonly options: Required<Pick<JwksJwtVerifierOptions, 'allowedAlgorithms' | 'cacheMaxAgeMs' | 'fetcher' | 'now'>>;
   private readonly keys = new Map<string, { jwk: JsonWebKey; loadedAt: number }>();
-  private lastRefresh = 0;
+  private lastUnknownKidMissAt: number | null = null;
+  private refreshInFlight: Promise<void> | null = null;
 
   constructor(private readonly config: JwksJwtVerifierOptions) {
     if (!config.issuer || !config.audience || !config.jwksUri) throw new Error('JWKS verifier configuration is incomplete');
+    // A URL provided through trusted server configuration must still use TLS.
+    const jwks = new URL(config.jwksUri);
+    if (jwks.protocol !== 'https:' || jwks.username || jwks.password) {
+      throw new Error('JWKS URL must be HTTPS without credentials');
+    }
     this.options = {
       allowedAlgorithms: config.allowedAlgorithms ?? ['RS256'],
       cacheMaxAgeMs: config.cacheMaxAgeMs ?? 300_000,
@@ -84,9 +90,13 @@ export class JwksJwtVerifier implements JwtVerifier {
       now: config.now ?? (() => Date.now()),
     };
     if (this.options.allowedAlgorithms.length === 0) throw new Error('At least one JWT algorithm is required');
+    if (!Number.isFinite(this.options.cacheMaxAgeMs) || this.options.cacheMaxAgeMs < 0) {
+      throw new Error('Invalid JWKS cache duration');
+    }
   }
 
   async verify(token: string): Promise<JwtClaims> {
+    if (token.length > 16_384) throw new JwtVerificationError();
     const parts = token.split('.');
     if (parts.length !== 3) throw new JwtVerificationError();
     const header = decodeJson(parts[0]);
@@ -95,7 +105,7 @@ export class JwksJwtVerifier implements JwtVerifier {
 
     const alg = header.alg;
     const kid = header.kid;
-    if (typeof alg !== 'string' || !this.options.allowedAlgorithms.includes(alg as JwtAlgorithm) || typeof kid !== 'string' || !kid) {
+    if (typeof alg !== 'string' || !this.options.allowedAlgorithms.includes(alg as JwtAlgorithm) || typeof kid !== 'string' || !kid || kid.length > 128) {
       throw new JwtVerificationError();
     }
     if (
@@ -113,7 +123,11 @@ export class JwksJwtVerifier implements JwtVerifier {
         throw new JwtVerificationError();
       }
     }
-    if (payload.jti !== undefined && typeof payload.jti !== 'string') throw new JwtVerificationError();
+    if (payload.jti !== undefined && (typeof payload.jti !== 'string' || !payload.jti)) throw new JwtVerificationError();
+    if (
+      (typeof payload.iat === 'number' && (payload.iat > now || payload.iat > payload.exp)) ||
+      (typeof payload.nbf === 'number' && payload.nbf >= payload.exp)
+    ) throw new JwtVerificationError();
 
     const jwk = await this.findKey(kid, now * 1000);
     if (!jwk || (typeof jwk.alg === 'string' && jwk.alg !== alg) || jwk.kty !== 'RSA') throw new JwtVerificationError();
@@ -154,27 +168,43 @@ export class JwksJwtVerifier implements JwtVerifier {
   private async findKey(kid: string, now: number): Promise<JsonWebKey | null> {
     const cached = this.keys.get(kid);
     if (cached && now - cached.loadedAt <= this.options.cacheMaxAgeMs) return cached.jwk;
-    await this.refresh(now, !cached || now - cached.loadedAt > this.options.cacheMaxAgeMs);
-    return this.keys.get(kid)?.jwk ?? null;
+    // An untrusted JWT header must not trigger an unbounded JWKS fetch storm.
+    if (!cached && this.lastUnknownKidMissAt !== null && now - this.lastUnknownKidMissAt < 1_000) {
+      return null;
+    }
+    await this.refresh(now);
+    const found = this.keys.get(kid)?.jwk ?? null;
+    if (!found && !cached) this.lastUnknownKidMissAt = now;
+    return found;
   }
 
-  private async refresh(now: number, force = false): Promise<void> {
-    if (!force && now - this.lastRefresh < 1_000) return;
-    this.lastRefresh = now;
-    let response: Response;
-    try {
-      response = await this.options.fetcher(this.config.jwksUri);
-      if (!response.ok) throw new Error('JWKS request failed');
-      const body = (await response.json()) as JwkSet;
-      if (!body || !Array.isArray(body.keys)) throw new Error('Invalid JWKS response');
-      const refreshed = new Map<string, { jwk: JsonWebKey; loadedAt: number }>();
-      for (const jwk of body.keys) {
-        if (typeof jwk.kid === 'string' && jwk.kty === 'RSA') refreshed.set(jwk.kid, { jwk, loadedAt: now });
+  private async refresh(now: number): Promise<void> {
+    if (this.refreshInFlight) return this.refreshInFlight;
+    const refresh = (async () => {
+      try {
+        const response = await this.options.fetcher(this.config.jwksUri);
+        if (!response.ok) throw new Error('JWKS request failed');
+        const body = (await response.json()) as JwkSet;
+        if (!body || !Array.isArray(body.keys) || body.keys.length > 128) {
+          throw new Error('Invalid JWKS response');
+        }
+        const refreshed = new Map<string, { jwk: JsonWebKey; loadedAt: number }>();
+        for (const jwk of body.keys) {
+          if (typeof jwk.kid === 'string' && jwk.kid.length <= 128 && jwk.kty === 'RSA') {
+            refreshed.set(jwk.kid, { jwk, loadedAt: now });
+          }
+        }
+        this.keys.clear();
+        for (const [keyId, entry] of refreshed) this.keys.set(keyId, entry);
+      } catch {
+        throw new JwtVerificationError();
       }
-      this.keys.clear();
-      for (const [kid, entry] of refreshed) this.keys.set(kid, entry);
-    } catch {
-      throw new JwtVerificationError();
+    })();
+    this.refreshInFlight = refresh;
+    try {
+      await refresh;
+    } finally {
+      if (this.refreshInFlight === refresh) this.refreshInFlight = null;
     }
   }
 }

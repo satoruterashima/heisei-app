@@ -29,15 +29,17 @@ describe('GET /api/v1/session', () => {
     });
     const response = await app.request('/api/v1/session', { headers: { authorization: `Bearer ${token}` } });
     expect(response.status).toBe(200);
+    expect(response.headers.get('cache-control')).toBe('no-store');
     expect(await response.json()).toEqual({
-      session: {
+      data: { session: {
         userId: '00000000-0000-4000-8000-000000000001',
         authLevel: 2,
         membership: 'free',
         roles: ['member'],
         status: 'active',
         expiresAt: expect.any(String),
-      },
+      } },
+      requestId: expect.any(String),
     });
   });
 
@@ -45,6 +47,10 @@ describe('GET /api/v1/session', () => {
     const app = createApiApp({ verifier: { verify: async () => { throw new Error('invalid'); } }, identityLoader: { load: async () => null } });
     const response = await app.request('/api/v1/session');
     expect(response.status).toBe(401);
-    expect(await response.json()).toEqual({ error: { code: 'unauthorized', message: 'Authentication required' } });
+    expect(response.headers.get('cache-control')).toBe('no-store');
+    expect(await response.json()).toEqual({
+      error: { code: 'unauthorized', message: 'Authentication required' },
+      requestId: expect.any(String),
+    });
   });
 });

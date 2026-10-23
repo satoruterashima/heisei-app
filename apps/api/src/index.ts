@@ -22,16 +22,20 @@ export function createApiApp(auth?: AuthMiddlewareOptions) {
   app.use('/api/v1/session', authMiddleware(middlewareOptions));
   app.get('/api/v1/session', (c) => {
     const { identity, claims } = getAuth(c);
+    const requestId = crypto.randomUUID();
     return c.json({
-      session: {
-        userId: identity.userId,
-        authLevel: identity.authLevel,
-        membership: identity.membership,
-        roles: identity.roles,
-        status: identity.status,
-        expiresAt: new Date(claims.exp * 1000).toISOString(),
+      data: {
+        session: {
+          userId: identity.userId,
+          authLevel: identity.authLevel,
+          membership: identity.membership,
+          roles: identity.roles,
+          status: identity.status,
+          expiresAt: new Date(claims.exp * 1000).toISOString(),
+        },
       },
-    });
+      requestId,
+    }, 200, { 'Cache-Control': 'no-store', 'X-Request-ID': requestId });
   });
 
   return app;
