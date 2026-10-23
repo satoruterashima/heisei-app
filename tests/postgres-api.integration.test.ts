@@ -1,7 +1,8 @@
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { execFileSync } from 'node:child_process';
 import { JwksJwtVerifier } from '../packages/auth/src/index.js';
 import { createApiAppWithDatabase } from '../apps/api/src/index.js';
-import { PostgresBlockRelationStore } from '../packages/database/src/index.js';
+import { PostgresBlockRelationStore, PostgresProfileStore } from '../packages/database/src/index.js';
 import { createLocalTrustedPostgresExecutor } from '../packages/database/src/local-postgres-executor.js';
 import type { TrustedPostgresExecutor } from '../packages/database/src/index.js';
 
@@ -10,6 +11,11 @@ const databaseUrl = process.env.HEISEI_LOCAL_PG_URL;
 const subject = 'integration-subject-1';
 const userId = '00000000-0000-4000-8000-000000000001';
 const targetId = '00000000-0000-4000-8000-000000000002';
+
+function adminSql(sql: string): string {
+  if (!container) throw new Error('local database container is required');
+  return execFileSync('docker', ['exec', '-i', container, 'psql', '-h', '127.0.0.1', '-q', '-A', '-t', '-v', 'ON_ERROR_STOP=1', '-U', 'postgres', '-d', 'heisei_local'], { input: sql, encoding: 'utf8' }).trim();
+}
 
 async function signedToken(tokenSubject = subject): Promise<{ verifier: JwksJwtVerifier; token: string }> {
   const pair = await crypto.subtle.generateKey(
@@ -55,6 +61,38 @@ describe.skipIf(!container || !databaseUrl)('real JWT → Hono → isolated Post
     });
     expect(response.status).toBe(200);
     expect((await response.json()).data.session).toMatchObject({ userId, authLevel: 1, status: 'active' });
+  });
+
+  it('gets and patches only the authenticated user profile through RLS', async () => {
+    const { verifier, token } = await signedToken();
+    const app = createApiAppWithDatabase({ verifier, executor });
+    const before = await app.request('/api/v1/profile', { headers: { authorization: `Bearer ${token}` } });
+    expect(before.status).toBe(200);
+    expect((await before.json()).data.profile).toMatchObject({ userId, username: 'integration-one', displayName: 'Integration One' });
+    const update = await app.request('/api/v1/profile', {
+      method: 'PATCH', headers: { authorization: `Bearer ${token}`, 'content-type': 'application/json' },
+      body: JSON.stringify({ displayName: 'Updated One', bio: 'private bio' }),
+    });
+    expect(update.status).toBe(200);
+    expect((await update.json()).data.profile).toMatchObject({ userId, displayName: 'Updated One', bio: 'private bio' });
+    expect(adminSql(`SELECT count(*)::text FROM audit_logs WHERE actor_user_id = '${userId}'::uuid AND action = 'profile.update'`)).toBe('1');
+  });
+
+  it('rolls back profile changes when the audit insert fails', async () => {
+    const failingExecutor: TrustedPostgresExecutor = {
+      withAuthSubject: executor.withAuthSubject.bind(executor),
+      withUserId: executor.withUserId.bind(executor),
+      withProfileWriter: (id, operation) => executor.withProfileWriter!(id, async (query) => operation({
+        query: async (text, values) => {
+          if (text.includes('INSERT INTO audit_logs')) throw new Error('audit unavailable');
+          return query.query(text, values);
+        },
+      })),
+    };
+    const store = new PostgresProfileStore(failingExecutor);
+    await expect(store.updateOwn(userId, { displayName: 'Must Roll Back' }, 'rollback-test')).rejects.toThrow('audit unavailable');
+    const current = await new PostgresProfileStore(executor).findOwn(userId);
+    expect(current?.displayName).toBe('Updated One');
   });
 
   it('rejects unknown subject and insufficient evidence without leaking DB state', async () => {

@@ -44,7 +44,7 @@ psql_file < "$repo_root/packages/database/drizzle/0000_auth_foundation.sql" >/de
 psql_file < "$repo_root/packages/database/drizzle/roles.sql" >/dev/null
 psql_file <<'SQL' >/dev/null
 CREATE ROLE heisei_test_login LOGIN PASSWORD 'local-test' NOSUPERUSER NOBYPASSRLS;
-GRANT heisei_app, heisei_identity_writer TO heisei_test_login;
+GRANT heisei_app, heisei_identity_writer, heisei_profile_writer TO heisei_test_login;
 CREATE ROLE heisei_app_login LOGIN PASSWORD 'local-app' NOSUPERUSER NOBYPASSRLS;
 CREATE ROLE heisei_identity_login LOGIN PASSWORD 'local-identity' NOSUPERUSER NOBYPASSRLS;
 GRANT heisei_app TO heisei_app_login;

@@ -1,8 +1,9 @@
 import { Hono } from 'hono';
 import { cors } from 'hono/cors';
-import { AccessPolicyService, authMiddleware, isAccessOperation, optionalAuthMiddleware, type AccessPolicyInput, type AuthMiddlewareOptions, type AuthVariables, getAuth, getOptionalAuth } from '@heisei/auth';
+import { AccessPolicyService, authMiddleware, authorize, isAccessOperation, optionalAuthMiddleware, type AccessPolicyInput, type AuthMiddlewareOptions, type AuthVariables, getAuth, getOptionalAuth } from '@heisei/auth';
 import type { JwtVerifier } from '@heisei/auth';
-import { DatabaseIdentityLoader, PostgresBlockRelationStore, PostgresIdentityRecordStore, type TrustedPostgresExecutor } from '@heisei/database';
+import { DatabaseIdentityLoader, PostgresBlockRelationStore, PostgresIdentityRecordStore, PostgresProfileStore, type ProfileStore, type TrustedPostgresExecutor } from '@heisei/database';
+import { updateProfileSchema } from '@heisei/validation';
 
 export type DatabaseApiOptions = {
   verifier: JwtVerifier;
@@ -17,6 +18,7 @@ export type ApiOptions = {
   approveRelationship?: (actorUserId: string, targetUserId: string) => Promise<boolean>;
   approvePrerequisites?: (actorUserId: string, operation: string) => Promise<boolean>;
   approveScope?: (actorUserId: string, operation: string) => Promise<boolean>;
+  profileStore?: ProfileStore;
 };
 
 export function createApiApp(authOrOptions?: AuthMiddlewareOptions | ApiOptions) {
@@ -34,7 +36,7 @@ export function createApiApp(authOrOptions?: AuthMiddlewareOptions | ApiOptions)
 
   const candidate = authOrOptions as (AuthMiddlewareOptions & ApiOptions) | undefined;
   const legacyAuth = candidate && 'verifier' in candidate
-    && !('auth' in candidate || 'accessPolicy' in candidate || 'loadBlockRelation' in candidate || 'approveRelationship' in candidate || 'approvePrerequisites' in candidate || 'approveScope' in candidate);
+    && !('auth' in candidate || 'accessPolicy' in candidate || 'loadBlockRelation' in candidate || 'approveRelationship' in candidate || 'approvePrerequisites' in candidate || 'approveScope' in candidate || 'profileStore' in candidate);
   const options: ApiOptions = legacyAuth
     ? { auth: candidate }
     : (candidate && 'verifier' in candidate
@@ -61,6 +63,51 @@ export function createApiApp(authOrOptions?: AuthMiddlewareOptions | ApiOptions)
       },
       requestId,
     }, 200, { 'Cache-Control': 'no-store', 'X-Request-ID': requestId });
+  });
+
+  app.use('/api/v1/profile', authMiddleware(middlewareOptions));
+  app.get('/api/v1/profile', async (c) => {
+    const { identity, claims } = getAuth(c);
+    const requestId = crypto.randomUUID();
+    const decision = authorize({ context: { identity, claims }, request: { minimumAuthLevel: 1 } });
+    if (!decision.allowed) {
+      return c.json({ error: { code: 'forbidden', message: 'Profile access is not allowed' }, requestId }, 403);
+    }
+    if (!options.profileStore) {
+      return c.json({ error: { code: 'service_unavailable', message: 'Profile storage is not configured' }, requestId }, 503);
+    }
+    const profile = await options.profileStore.findOwn(identity.userId).catch(() => null);
+    if (!profile) return c.json({ error: { code: 'not_found', message: 'Profile not found' }, requestId }, 404);
+    return c.json({ data: { profile: safeProfile(profile) }, requestId }, 200, { 'Cache-Control': 'no-store', 'X-Request-ID': requestId });
+  });
+  app.patch('/api/v1/profile', async (c) => {
+    const { identity, claims } = getAuth(c);
+    const requestId = crypto.randomUUID();
+    const decision = authorize({ context: { identity, claims }, request: { minimumAuthLevel: 1 } });
+    if (!decision.allowed) {
+      return c.json({ error: { code: 'forbidden', message: 'Profile update is not allowed' }, requestId }, 403);
+    }
+    if (!options.profileStore) {
+      return c.json({ error: { code: 'service_unavailable', message: 'Profile storage is not configured' }, requestId }, 503);
+    }
+    let body: unknown;
+    try {
+      body = await c.req.json();
+    } catch {
+      return c.json({ error: { code: 'invalid_request', message: 'JSON body is required' }, requestId }, 400);
+    }
+    const parsed = updateProfileSchema.safeParse(body);
+    if (!parsed.success) {
+      return c.json({ error: { code: 'validation_failed', message: 'Profile fields are invalid' }, requestId }, 422);
+    }
+    try {
+      const profile = await options.profileStore.updateOwn(identity.userId, parsed.data, requestId);
+      return c.json({ data: { profile: safeProfile(profile) }, requestId }, 200, { 'Cache-Control': 'no-store', 'X-Request-ID': requestId });
+    } catch {
+      // ProfileStore must update and audit in one transaction. Any audit or DB
+      // failure is intentionally opaque and cannot produce an update success.
+      return c.json({ error: { code: 'internal_error', message: 'Profile update failed' }, requestId }, 500);
+    }
   });
 
   const policy = options.accessPolicy ?? new AccessPolicyService();
@@ -107,7 +154,20 @@ export function createApiAppWithDatabase(options: DatabaseApiOptions) {
   return createApiApp({
     auth: { verifier: options.verifier, identityLoader },
     loadBlockRelation: (actor, target) => blockStore.findBetween(actor, target),
+    profileStore: new PostgresProfileStore(options.executor),
   });
+}
+
+function safeProfile(profile: { userId: string; username: string; displayName: string; bio: string | null; favoriteGenres: string | null; avatarUrl: string | null; updatedAt: string }) {
+  return {
+    userId: profile.userId,
+    username: profile.username,
+    displayName: profile.displayName,
+    bio: profile.bio,
+    favoriteGenres: profile.favoriteGenres,
+    avatarUrl: profile.avatarUrl,
+    updatedAt: profile.updatedAt,
+  };
 }
 
 const app = createApiApp();

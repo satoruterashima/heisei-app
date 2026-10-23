@@ -104,13 +104,13 @@ REVOKE ALL ON audit_logs FROM PUBLIC;
 -- role selected after server-side JWT and identity verification.
 DROP POLICY IF EXISTS profiles_owner_select ON profiles;
 CREATE POLICY profiles_owner_select ON profiles FOR SELECT
-  USING (current_user = 'heisei_app'
+  USING ((current_user = 'heisei_app' OR current_user = 'heisei_profile_writer')
       AND id::text = current_setting('app.user_id', true));
 DROP POLICY IF EXISTS profiles_owner_update ON profiles;
 CREATE POLICY profiles_owner_update ON profiles FOR UPDATE
-  USING (current_user = 'heisei_app'
+  USING ((current_user = 'heisei_app' OR current_user = 'heisei_profile_writer')
       AND id::text = current_setting('app.user_id', true))
-  WITH CHECK (current_user = 'heisei_app'
+  WITH CHECK ((current_user = 'heisei_app' OR current_user = 'heisei_profile_writer')
       AND id::text = current_setting('app.user_id', true));
 DROP POLICY IF EXISTS profiles_staff_scoped_select ON profiles;
 CREATE POLICY profiles_staff_scoped_select ON profiles FOR SELECT
@@ -190,5 +190,10 @@ DROP POLICY IF EXISTS audit_logs_trusted_insert ON audit_logs;
 CREATE POLICY audit_logs_trusted_insert ON audit_logs FOR INSERT
   WITH CHECK (current_user = 'heisei_audit_writer'
       AND actor_user_id::text = current_setting('app.audit_actor_id', true));
+DROP POLICY IF EXISTS audit_logs_profile_writer_insert ON audit_logs;
+CREATE POLICY audit_logs_profile_writer_insert ON audit_logs FOR INSERT
+  WITH CHECK (current_user = 'heisei_profile_writer'
+      AND actor_user_id::text = current_setting('app.user_id', true)
+      AND target_user_id::text = current_setting('app.user_id', true));
 
 -- No UPDATE/DELETE policies are created for audit_logs: append-only for non-owner roles.
