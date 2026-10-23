@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from 'vitest';
 import { createApiApp } from '../apps/api/src/index.js';
 import type { AuthIdentity, JwtClaims } from '../packages/auth/src/index.js';
-import { BlockNotFoundError, type BlockMutationStore } from '../packages/database/src/index.js';
+import type { BlockMutationStore } from '../packages/database/src/index.js';
 
 const claims: JwtClaims = { sub: 'block-subject', iss: 'issuer', aud: 'audience', exp: Math.floor(Date.now() / 1000) + 300 };
 const actor = '00000000-0000-4000-8000-000000000001';
@@ -9,8 +9,8 @@ const target = '00000000-0000-4000-8000-000000000002';
 const blockId = '00000000-0000-4000-8000-000000000099';
 
 function appFor(identity: AuthIdentity, store: BlockMutationStore = {
-  blockOwn: vi.fn(async () => ({ blockId })),
-  unblockOwn: vi.fn(async () => ({ targetUserId: target })),
+  blockOwn: vi.fn(async () => undefined),
+  unblockOwn: vi.fn(async () => undefined),
 }) {
   return createApiApp({
     verifier: { verify: async (token) => token === 'valid' ? claims : { ...claims, sub: 'forged' } },
@@ -31,7 +31,7 @@ describe('block mutation API', () => {
   });
 
   it('strictly validates JSON and never accepts a client actor id', async () => {
-    const store: BlockMutationStore = { blockOwn: vi.fn(async () => ({ blockId })), unblockOwn: vi.fn(async () => ({ targetUserId: target })) };
+    const store: BlockMutationStore = { blockOwn: vi.fn(async () => undefined), unblockOwn: vi.fn(async () => undefined) };
     const app = appFor(activeL2, store);
     const unexpected = await app.request('/api/v1/blocks', { method: 'POST', headers: { authorization: 'Bearer valid', 'content-type': 'application/json' }, body: JSON.stringify({ targetUserId: target, actorUserId: target }) });
     expect(unexpected.status).toBe(422);
@@ -44,7 +44,7 @@ describe('block mutation API', () => {
 
   it('does not expose an unavailable target or another owner block', async () => {
     const store: BlockMutationStore = {
-      blockOwn: vi.fn(async () => ({ blockId })),
+      blockOwn: vi.fn(async () => undefined),
       unblockOwn: vi.fn(async () => { throw new Error('DB unavailable'); }),
     };
     const app = appFor(activeL2, store);
@@ -53,7 +53,7 @@ describe('block mutation API', () => {
     expect(acceptedUnknownTarget.status).toBe(202);
     expect(other.status).toBe(500);
     expect(JSON.stringify(await other.json())).not.toContain('DB unavailable');
-    const missing = await appFor(activeL2, { blockOwn: vi.fn(async () => ({ blockId })), unblockOwn: vi.fn(async () => { throw new BlockNotFoundError(); }) }).request(`/api/v1/blocks/${blockId}`, { method: 'DELETE', headers: { authorization: 'Bearer valid' } });
-    expect(missing.status).toBe(404);
+    const acceptedMissing = await appFor(activeL2, { blockOwn: vi.fn(async () => undefined), unblockOwn: vi.fn(async () => undefined) }).request(`/api/v1/blocks/${blockId}`, { method: 'DELETE', headers: { authorization: 'Bearer valid' } });
+    expect(acceptedMissing.status).toBe(202);
   });
 });

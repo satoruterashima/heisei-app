@@ -143,18 +143,23 @@ describe.skipIf(!container || !databaseUrl)('real JWT → Hono → isolated Post
     });
     expect(repeat.status).toBe(202);
     const repeatBody = await repeat.json();
-    expect(repeatBody.data.block.id).toMatch(/^[0-9a-f-]{36}$/i);
+    expect(repeatBody.data).toEqual({ accepted: true });
     const unknown = await app.request('/api/v1/blocks', {
       method: 'POST', headers: { authorization: `Bearer ${token}`, 'content-type': 'application/json' },
       body: JSON.stringify({ targetUserId: '00000000-0000-4000-8000-000000000003' }),
     });
     expect(unknown.status).toBe(202);
     const unknownBody = await unknown.json();
-    expect(Object.keys(unknownBody.data.block)).toEqual(Object.keys(repeatBody.data.block));
+    expect(unknownBody.data).toEqual(repeatBody.data);
+    const unknownDelete = await app.request('/api/v1/blocks/00000000-0000-4000-8000-000000000003', {
+      method: 'DELETE', headers: { authorization: `Bearer ${token}` },
+    });
+    expect(unknownDelete.status).toBe(202);
+    expect((await unknownDelete.json()).data).toEqual(repeatBody.data);
     const removed = await app.request(`/api/v1/blocks/${existing}`, {
       method: 'DELETE', headers: { authorization: `Bearer ${token}` },
     });
-    expect(removed.status).toBe(200);
+    expect(removed.status).toBe(202);
     expect(adminSql(`SELECT count(*)::text FROM blocks WHERE id = '${existing}'::uuid`)).toBe('0');
     expect(adminSql(`SELECT count(*)::text FROM audit_logs WHERE actor_user_id = '${userId}'::uuid AND target_user_id = '${targetId}'::uuid AND action = 'block.delete'`)).toBe('1');
     const recreated = await app.request('/api/v1/blocks', {
@@ -162,8 +167,11 @@ describe.skipIf(!container || !databaseUrl)('real JWT → Hono → isolated Post
       body: JSON.stringify({ targetUserId: targetId }),
     });
     expect(recreated.status).toBe(202);
-    expect((await recreated.json()).data.block.id).toMatch(/^[0-9a-f-]{36}$/i);
+    expect((await recreated.json()).data).toEqual(repeatBody.data);
     expect(adminSql(`SELECT count(*)::text FROM audit_logs WHERE actor_user_id = '${userId}'::uuid AND target_user_id = '${targetId}'::uuid AND action = 'block.create'`)).toBe('1');
+    const newBlockId = adminSql(`SELECT id::text FROM blocks WHERE blocker_id = '${userId}'::uuid AND blocked_id = '${targetId}'::uuid`);
+    const removedNew = await app.request(`/api/v1/blocks/${newBlockId}`, { method: 'DELETE', headers: { authorization: `Bearer ${token}` } });
+    expect(removedNew.status).toBe(202);
   });
 
   it('rejects invalid JWT and cross-owner unblock without leaking ownership', async () => {
@@ -178,7 +186,7 @@ describe.skipIf(!container || !databaseUrl)('real JWT → Hono → isolated Post
     const crossOwner = await app.request(`/api/v1/blocks/${otherOwned}`, {
       method: 'DELETE', headers: { authorization: `Bearer ${token}` },
     });
-    expect(crossOwner.status).toBe(404);
+    expect(crossOwner.status).toBe(202);
     expect(adminSql(`SELECT count(*)::text FROM blocks WHERE id = '${otherOwned}'::uuid`)).toBe('1');
   });
 

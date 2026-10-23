@@ -2,7 +2,7 @@ import { Hono } from 'hono';
 import { cors } from 'hono/cors';
 import { AccessPolicyService, authMiddleware, authorize, isAccessOperation, optionalAuthMiddleware, type AccessPolicyInput, type AuthMiddlewareOptions, type AuthVariables, getAuth, getOptionalAuth } from '@heisei/auth';
 import type { JwtVerifier } from '@heisei/auth';
-import { BlockNotFoundError, DatabaseIdentityLoader, PostgresBlockMutationStore, PostgresBlockRelationStore, PostgresIdentityRecordStore, PostgresProfileStore, type BlockMutationStore, type ProfileStore, type TrustedPostgresExecutor } from '@heisei/database';
+import { DatabaseIdentityLoader, PostgresBlockMutationStore, PostgresBlockRelationStore, PostgresIdentityRecordStore, PostgresProfileStore, type BlockMutationStore, type ProfileStore, type TrustedPostgresExecutor } from '@heisei/database';
 import { updateProfileSchema } from '@heisei/validation';
 
 export type DatabaseApiOptions = {
@@ -139,8 +139,8 @@ export function createApiApp(authOrOptions?: AuthMiddlewareOptions | ApiOptions)
     }
     if (!isStrictBlockBody(body) || body.targetUserId === identity.userId) return c.json({ error: { code: 'validation_failed', message: 'Block target is invalid' }, requestId }, 422, { 'Cache-Control': 'no-store', 'X-Request-ID': requestId });
     try {
-      const result = await options.blockStore.blockOwn(identity.userId, body.targetUserId, requestId);
-      return c.json({ data: { block: { id: result.blockId } }, requestId }, 202, { 'Cache-Control': 'no-store', 'X-Request-ID': requestId });
+      await options.blockStore.blockOwn(identity.userId, body.targetUserId, requestId);
+      return c.json({ data: { accepted: true }, requestId }, 202, { 'Cache-Control': 'no-store', 'X-Request-ID': requestId });
     } catch {
       return c.json({ error: { code: 'internal_error', message: 'Block operation failed' }, requestId }, 500, { 'Cache-Control': 'no-store', 'X-Request-ID': requestId });
     }
@@ -155,11 +155,9 @@ export function createApiApp(authOrOptions?: AuthMiddlewareOptions | ApiOptions)
     const blockId = c.req.param('id');
     if (!isUuid(blockId)) return c.json({ error: { code: 'invalid_request', message: 'Block id is invalid' }, requestId }, 400, { 'Cache-Control': 'no-store', 'X-Request-ID': requestId });
     try {
-      const result = await options.blockStore.unblockOwn(identity.userId, blockId, requestId);
-      return c.json({ data: { unblocked: true, targetUserId: result.targetUserId }, requestId }, 200, { 'Cache-Control': 'no-store', 'X-Request-ID': requestId });
-    } catch (error) {
-      // RLS intentionally makes another owner's block indistinguishable from a missing block.
-      if (error instanceof BlockNotFoundError) return c.json({ error: { code: 'not_found', message: 'Block is unavailable' }, requestId }, 404, { 'Cache-Control': 'no-store', 'X-Request-ID': requestId });
+      await options.blockStore.unblockOwn(identity.userId, blockId, requestId);
+      return c.json({ data: { accepted: true }, requestId }, 202, { 'Cache-Control': 'no-store', 'X-Request-ID': requestId });
+    } catch {
       return c.json({ error: { code: 'internal_error', message: 'Block operation failed' }, requestId }, 500, { 'Cache-Control': 'no-store', 'X-Request-ID': requestId });
     }
   });
