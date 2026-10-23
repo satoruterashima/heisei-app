@@ -42,21 +42,23 @@ psql_file() { docker exec -i "$container" psql -h 127.0.0.1 -q -v ON_ERROR_STOP=
 psql_file < "$repo_root/packages/database/drizzle/0000_baseline_profiles.sql" >/dev/null
 psql_file < "$repo_root/packages/database/drizzle/0000_auth_foundation.sql" >/dev/null
 psql_file < "$repo_root/packages/database/drizzle/roles.sql" >/dev/null
+psql_file < "$repo_root/packages/database/drizzle/0001_profile_visibility.sql" >/dev/null
 # Reapply the local foundation and role grants to verify migration idempotency.
 psql_file < "$repo_root/packages/database/drizzle/0000_auth_foundation.sql" >/dev/null
 psql_file < "$repo_root/packages/database/drizzle/roles.sql" >/dev/null
+psql_file < "$repo_root/packages/database/drizzle/0001_profile_visibility.sql" >/dev/null
 psql_file <<'SQL' >/dev/null
 CREATE ROLE heisei_test_login LOGIN PASSWORD 'local-test' NOSUPERUSER NOBYPASSRLS;
-GRANT heisei_app, heisei_identity_writer, heisei_profile_writer, heisei_block_writer TO heisei_test_login;
+GRANT heisei_app, heisei_identity_writer, heisei_profile_writer, heisei_block_writer, heisei_visibility_reader TO heisei_test_login;
 CREATE ROLE heisei_app_login LOGIN PASSWORD 'local-app' NOSUPERUSER NOBYPASSRLS;
 CREATE ROLE heisei_identity_login LOGIN PASSWORD 'local-identity' NOSUPERUSER NOBYPASSRLS;
 GRANT heisei_app TO heisei_app_login;
 GRANT heisei_identity_writer TO heisei_identity_login;
 GRANT USAGE ON SCHEMA public TO heisei_app_login, heisei_identity_login;
-INSERT INTO profiles (id, username, display_name, auth_subject, auth_level)
+INSERT INTO profiles (id, username, display_name, auth_subject, auth_level, profile_visibility)
 VALUES
- ('00000000-0000-4000-8000-000000000001', 'integration-one', 'Integration One', 'integration-subject-1', 2),
- ('00000000-0000-4000-8000-000000000002', 'integration-two', 'Integration Two', 'integration-subject-2', 2);
+ ('00000000-0000-4000-8000-000000000001', 'integration-one', 'Integration One', 'integration-subject-1', 2, 'private'),
+ ('00000000-0000-4000-8000-000000000002', 'integration-two', 'Integration Two', 'integration-subject-2', 2, 'public');
 INSERT INTO user_verifications (user_id, kind, status, verification_version)
 VALUES ('00000000-0000-4000-8000-000000000001', 'email_verified', 'verified', '003e-test');
 INSERT INTO user_verifications (user_id, kind, status, verification_version)

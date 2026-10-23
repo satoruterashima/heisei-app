@@ -22,6 +22,9 @@ BEGIN
   IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'heisei_block_writer') THEN
     CREATE ROLE heisei_block_writer NOLOGIN NOSUPERUSER NOBYPASSRLS;
   END IF;
+  IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'heisei_visibility_reader') THEN
+    CREATE ROLE heisei_visibility_reader NOLOGIN NOSUPERUSER NOBYPASSRLS;
+  END IF;
 END $$;
 
 ALTER ROLE heisei_app NOSUPERUSER NOBYPASSRLS NOLOGIN;
@@ -30,6 +33,7 @@ ALTER ROLE heisei_audit_writer NOSUPERUSER NOBYPASSRLS NOLOGIN;
 ALTER ROLE heisei_identity_writer NOSUPERUSER NOBYPASSRLS NOLOGIN;
 ALTER ROLE heisei_profile_writer NOSUPERUSER NOBYPASSRLS NOLOGIN;
 ALTER ROLE heisei_block_writer NOSUPERUSER NOBYPASSRLS NOLOGIN;
+ALTER ROLE heisei_visibility_reader NOSUPERUSER NOBYPASSRLS NOLOGIN;
 
 REVOKE ALL ON profiles, user_verifications, user_settings, blocks, audit_logs FROM heisei_app;
 GRANT SELECT ON profiles, user_verifications, user_settings, blocks TO heisei_app;
@@ -51,6 +55,9 @@ GRANT INSERT, UPDATE ON user_verifications TO heisei_identity_writer;
 REVOKE ALL ON blocks, audit_logs FROM heisei_block_writer;
 GRANT SELECT, INSERT, DELETE ON blocks TO heisei_block_writer;
 GRANT INSERT ON audit_logs TO heisei_block_writer;
+
+REVOKE ALL ON profiles, blocks FROM heisei_visibility_reader;
+GRANT SELECT ON blocks TO heisei_visibility_reader;
 
 -- The profile writer is the only role allowed to atomically update safe
 -- profile fields and append the corresponding audit event in one transaction.
