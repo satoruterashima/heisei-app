@@ -97,6 +97,17 @@ describe.skipIf(!container)('real JWT → Hono → isolated PostgreSQL', () => {
     expect(JSON.stringify(await response.json())).not.toContain('integration-subject');
   });
 
+  it('rejects a known subject with missing verification evidence', async () => {
+    const { verifier, token } = await signedToken('integration-subject-2');
+    const response = await createApiAppWithDatabase({ verifier, executor: makeExecutor() }).request('/api/v1/session', {
+      headers: { authorization: `Bearer ${token}` },
+    });
+    expect(response.status).toBe(401);
+    const body = await response.json();
+    expect(body.error.code).toBe('unauthorized');
+    expect(JSON.stringify(body)).not.toContain('integration-subject-2');
+  });
+
   it('reads both block directions through the same isolated executor', async () => {
     const result = await new PostgresBlockRelationStore(makeExecutor()).findBetween(userId, targetId);
     expect(result).toEqual({ blockedByActor: true, blockedByTarget: true });

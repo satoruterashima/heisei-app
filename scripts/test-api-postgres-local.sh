@@ -9,14 +9,35 @@ fi
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 container="heisei-api-db-${PPID}-${RANDOM}"
 trap 'docker rm -f "$container" >/dev/null 2>&1 || true' EXIT
-docker run --name "$container" -e POSTGRES_PASSWORD=local-only-password -e POSTGRES_DB=heisei_local -d postgres:16-alpine >/dev/null
+started=0
+for attempt in 1 2 3; do
+  echo "INFO: isolated PostgreSQL container start attempt $attempt"
+  if docker run --name "$container" -e POSTGRES_PASSWORD=local-only-password -e POSTGRES_DB=heisei_local -d postgres:16-alpine >/dev/null; then
+    started=1
+    break
+  fi
+  docker rm -f "$container" >/dev/null 2>&1 || true
+  sleep 2
+done
+if [[ "$started" != 1 ]]; then
+  echo "FAIL: could not start isolated PostgreSQL container" >&2
+  exit 1
+fi
+# Wait for the final TCP server rather than PostgreSQL's init-only Unix socket.
+ready=0
 for _ in $(seq 1 45); do
-  if docker exec "$container" pg_isready -h 127.0.0.1 -U postgres -d heisei_local >/dev/null 2>&1; then
+  if docker exec "$container" pg_isready -h 127.0.0.1 -U postgres -d heisei_local >/dev/null 2>&1 &&
+     docker exec "$container" psql -h 127.0.0.1 -U postgres -d heisei_local -Atqc 'SELECT 1' >/dev/null 2>&1; then
+    ready=1
     break
   fi
   sleep 1
 done
-docker exec "$container" pg_isready -h 127.0.0.1 -U postgres -d heisei_local >/dev/null
+if [[ "$ready" != 1 ]]; then
+  echo "FAIL: isolated PostgreSQL did not become ready" >&2
+  docker logs --tail 50 "$container" >&2 || true
+  exit 1
+fi
 psql_file() { docker exec -i "$container" psql -h 127.0.0.1 -q -v ON_ERROR_STOP=1 -U postgres -d heisei_local "$@"; }
 psql_file < "$repo_root/packages/database/drizzle/0000_baseline_profiles.sql" >/dev/null
 psql_file < "$repo_root/packages/database/drizzle/0000_auth_foundation.sql" >/dev/null
@@ -39,8 +60,6 @@ VALUES
  ('00000000-0000-4000-8000-000000000002', '00000000-0000-4000-8000-000000000001');
 SQL
 export HEISEI_LOCAL_PG_CONTAINER="$container"
-export COREPACK_HOME="${COREPACK_HOME:-/workspace/.heisei-cloud/corepack}"
-export XDG_DATA_HOME="${XDG_DATA_HOME:-/workspace/.heisei-cloud/data}"
-export npm_config_cache="${npm_config_cache:-/workspace/.heisei-cloud/npm}"
-corepack pnpm --config.verifyDepsBeforeRun=warn vitest run tests/postgres-api.integration.test.ts
+# Use the runner's existing Corepack/pnpm cache; never assume /workspace exists.
+pnpm --config.verifyDepsBeforeRun=warn exec vitest run tests/postgres-api.integration.test.ts
 echo "PASS: real JWT → Hono → isolated PostgreSQL integration"
