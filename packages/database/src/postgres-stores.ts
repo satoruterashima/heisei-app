@@ -18,6 +18,21 @@ export interface TrustedPostgresExecutor {
   withUserId<T>(userId: string, operation: (query: PostgresQueryExecutor) => Promise<T>): Promise<T>;
   /** Optional until every approved executor supports the atomic profile writer role. */
   withProfileWriter?<T>(userId: string, operation: (query: PostgresQueryExecutor) => Promise<T>): Promise<T>;
+  withBlockWriter?<T>(userId: string, operation: (query: PostgresQueryExecutor) => Promise<T>): Promise<T>;
+}
+
+export type BlockWriteResult = { blockId: string; targetUserId: string; alreadyBlocked: boolean };
+
+export class BlockTargetUnavailableError extends Error {
+  constructor() {
+    super('block target is unavailable');
+    this.name = 'BlockTargetUnavailableError';
+  }
+}
+
+export interface BlockMutationStore {
+  blockOwn(actorUserId: string, targetUserId: string, requestId: string): Promise<BlockWriteResult>;
+  unblockOwn(actorUserId: string, blockId: string, requestId: string): Promise<{ targetUserId: string }>;
 }
 
 export type ProfileRecord = {
@@ -106,8 +121,67 @@ const profileAuditSql = `
   VALUES ($1::uuid, $1::uuid, 'profile.update', $3, $2, '003g')
 `;
 
+const blockInsertSql = `
+  INSERT INTO blocks (blocker_id, blocked_id)
+  VALUES ($1::uuid, $2::uuid)
+  ON CONFLICT (blocker_id, blocked_id) DO NOTHING
+  RETURNING id::text AS block_id, blocked_id::text AS target_user_id
+`;
+
+const blockDeleteSql = `
+  DELETE FROM blocks
+  WHERE id = $1::uuid
+  RETURNING blocked_id::text AS target_user_id
+`;
+
+const blockAuditSql = `
+  INSERT INTO audit_logs (actor_user_id, target_user_id, action, reason, request_id, rule_version)
+  VALUES ($1::uuid, $2::uuid, $3, NULL, $4, '003h')
+`;
+
 function isUuid(value: string): boolean {
   return /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(value);
+}
+
+function isDatabaseConstraintError(error: unknown, code: string): boolean {
+  return typeof error === 'object' && error !== null && 'code' in error && (error as { code?: unknown }).code === code;
+}
+
+/** Block mutations and their append-only audit event share one RLS-scoped transaction. */
+export class PostgresBlockMutationStore implements BlockMutationStore {
+  constructor(private readonly executor: TrustedPostgresExecutor) {}
+
+  async blockOwn(actorUserId: string, targetUserId: string, requestId: string): Promise<BlockWriteResult> {
+    if (!isUuid(actorUserId) || !isUuid(targetUserId) || actorUserId === targetUserId || !requestId || requestId.length > 128) {
+      throw new Error('invalid block mutation');
+    }
+    if (!this.executor.withBlockWriter) throw new Error('block writer is unavailable');
+    try {
+      return await this.executor.withBlockWriter(actorUserId, async (query) => {
+        const inserted = await query.query<{ block_id: string; target_user_id: string }>(blockInsertSql, [actorUserId, targetUserId]);
+        const row = inserted.rows[0];
+        if (!row) return { blockId: '', targetUserId, alreadyBlocked: true };
+        if (typeof row.block_id !== 'string' || row.target_user_id !== targetUserId) throw new Error('invalid block row');
+        await query.query(blockAuditSql, [actorUserId, targetUserId, 'block.create', requestId]);
+        return { blockId: row.block_id, targetUserId, alreadyBlocked: false };
+      });
+    } catch (error) {
+      if (isDatabaseConstraintError(error, '23503')) throw new BlockTargetUnavailableError();
+      throw error;
+    }
+  }
+
+  async unblockOwn(actorUserId: string, blockId: string, requestId: string): Promise<{ targetUserId: string }> {
+    if (!isUuid(actorUserId) || !isUuid(blockId) || !requestId || requestId.length > 128) throw new Error('invalid block mutation');
+    if (!this.executor.withBlockWriter) throw new Error('block writer is unavailable');
+    return this.executor.withBlockWriter(actorUserId, async (query) => {
+      const deleted = await query.query<{ target_user_id: string }>(blockDeleteSql, [blockId]);
+      const row = deleted.rows[0];
+      if (!row || typeof row.target_user_id !== 'string') throw new Error('block not found');
+      await query.query(blockAuditSql, [actorUserId, row.target_user_id, 'block.delete', requestId]);
+      return { targetUserId: row.target_user_id };
+    });
+  }
 }
 
 function profileFromRow(row: Record<string, unknown>): ProfileRecord | null {
