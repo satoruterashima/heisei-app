@@ -63,6 +63,7 @@ psql_file < "$repo_root/packages/database/drizzle/0000_auth_foundation.sql" >/de
 psql_file < "$repo_root/packages/database/drizzle/roles.sql" >/dev/null
 psql_file < "$repo_root/packages/database/drizzle/0001_profile_visibility.sql" >/dev/null
 psql_file < "$repo_root/packages/database/drizzle/0002_report_foundation_g4a.sql" >/dev/null
+psql_file < "$repo_root/packages/database/drizzle/0003_report_atomic_boundary_g4b1.sql" >/dev/null
 psql_file < "$repo_root/packages/database/drizzle/roles.sql" >/dev/null
 echo "PASS: initial migration and role grants applied"
 
@@ -91,6 +92,7 @@ VALUES ('00000000-0000-4000-8000-000000000001', 'email_verified', 'verified', 'r
 SQL
 
 echo "PASS: test users and non-privileged login roles created"
+
 roles_ok="$(psql_file -At <<'SQL'
 SELECT count(*) FROM pg_roles
 WHERE rolname IN ('heisei_app', 'heisei_staff', 'heisei_identity_writer', 'heisei_audit_writer')
@@ -122,6 +124,154 @@ run_as() {
   shift
   psql_file -v role_name="$role" "$@"
 }
+
+psql_file <<'SQL' >/dev/null
+UPDATE profiles
+SET auth_level = 2, profile_visibility = CASE
+  WHEN id IN ('00000000-0000-4000-8000-000000000001', '00000000-0000-4000-8000-000000000002') THEN 'public'
+  ELSE 'private'
+END;
+UPDATE profiles SET auth_level = 2 WHERE id = '00000000-0000-4000-8000-000000000003';
+SQL
+atomic_report_id="$(run_as heisei_report_login -At <<'SQL'
+SET ROLE heisei_report_writer;
+SET app.user_id = '00000000-0000-4000-8000-000000000003';
+SELECT report_create_atomic('00000000-0000-4000-8000-000000000001', 'other', 'category-v1', 'g4b1-success');
+SQL
+)"
+test -n "$atomic_report_id"
+atomic_audit_count="$(psql_file -Atqc "SELECT count(*) FROM audit_logs WHERE action = 'report.create' AND rule_version = '003i-g4b1' AND request_id = 'g4b1-success'")"
+test "$atomic_audit_count" = 1
+echo "PASS: atomic visibility/report/audit function commits together"
+
+deny_report_id="$(run_as heisei_report_login -At <<'SQL'
+SET ROLE heisei_report_writer;
+SET app.user_id = '00000000-0000-4000-8000-000000000003';
+SELECT report_create_atomic('00000000-0000-4000-8000-000000000003', 'other', 'category-v1', 'g4b1-deny');
+SQL
+)"
+test -z "$deny_report_id"
+echo "PASS: atomic function denies private target without saving"
+
+psql_file <<'SQL' >/dev/null
+UPDATE profiles SET account_status = 'suspended'
+WHERE id = '00000000-0000-4000-8000-000000000002';
+SQL
+suspended_target_report_id="$(run_as heisei_report_login -At <<'SQL'
+SET ROLE heisei_report_writer;
+SET app.user_id = '00000000-0000-4000-8000-000000000003';
+SELECT report_create_atomic('00000000-0000-4000-8000-000000000002', 'other', 'category-v1', 'g4b1-suspended-target');
+SQL
+)"
+test -z "$suspended_target_report_id"
+psql_file <<'SQL' >/dev/null
+UPDATE profiles SET account_status = 'active'
+WHERE id = '00000000-0000-4000-8000-000000000002';
+UPDATE profiles SET account_status = 'suspended'
+WHERE id = '00000000-0000-4000-8000-000000000003';
+SQL
+suspended_actor_report_id="$(run_as heisei_report_login -At <<'SQL'
+SET ROLE heisei_report_writer;
+SET app.user_id = '00000000-0000-4000-8000-000000000003';
+SELECT report_create_atomic('00000000-0000-4000-8000-000000000001', 'other', 'category-v1', 'g4b1-suspended-actor');
+SQL
+)"
+test -z "$suspended_actor_report_id"
+psql_file <<'SQL' >/dev/null
+UPDATE profiles SET account_status = 'active'
+WHERE id = '00000000-0000-4000-8000-000000000003';
+SQL
+echo "PASS: atomic function denies suspended target and actor"
+
+psql_file <<'SQL' >/dev/null
+INSERT INTO blocks (blocker_id, blocked_id)
+VALUES ('00000000-0000-4000-8000-000000000002', '00000000-0000-4000-8000-000000000001');
+SQL
+blocked_actor_report_id="$(run_as heisei_report_login -At <<'SQL'
+SET ROLE heisei_report_writer;
+SET app.user_id = '00000000-0000-4000-8000-000000000002';
+SELECT report_create_atomic('00000000-0000-4000-8000-000000000001', 'other', 'category-v1', 'g4b1-blocked-actor');
+SQL
+)"
+test -z "$blocked_actor_report_id"
+psql_file <<'SQL' >/dev/null
+DELETE FROM blocks
+WHERE blocker_id = '00000000-0000-4000-8000-000000000002'
+  AND blocked_id = '00000000-0000-4000-8000-000000000001';
+INSERT INTO blocks (blocker_id, blocked_id)
+VALUES ('00000000-0000-4000-8000-000000000001', '00000000-0000-4000-8000-000000000002');
+SQL
+blocked_target_report_id="$(run_as heisei_report_login -At <<'SQL'
+SET ROLE heisei_report_writer;
+SET app.user_id = '00000000-0000-4000-8000-000000000002';
+SELECT report_create_atomic('00000000-0000-4000-8000-000000000001', 'other', 'category-v1', 'g4b1-blocked-target');
+SQL
+)"
+test -z "$blocked_target_report_id"
+psql_file <<'SQL' >/dev/null
+DELETE FROM blocks
+WHERE blocker_id = '00000000-0000-4000-8000-000000000001'
+  AND blocked_id = '00000000-0000-4000-8000-000000000002';
+SQL
+echo "PASS: atomic function denies actor->target and target->actor blocks"
+
+# Deterministic advisory-lock barrier: session A holds the target lock before
+# admission, while session B must wait and then complete after A commits.
+psql_file <<'SQL' >/dev/null
+UPDATE profiles SET profile_visibility = 'public'
+WHERE id = '00000000-0000-4000-8000-000000000003';
+DELETE FROM reports
+WHERE target_user_id = '00000000-0000-4000-8000-000000000003'
+  AND reporter_user_id IN ('00000000-0000-4000-8000-000000000001', '00000000-0000-4000-8000-000000000002');
+SQL
+lock_a="$(mktemp)"
+lock_b="$(mktemp)"
+set +e
+run_as heisei_report_login >"$lock_a" 2>&1 <<'SQL' &
+SET ROLE heisei_report_writer;
+SET app.user_id = '00000000-0000-4000-8000-000000000001';
+BEGIN;
+SELECT pg_advisory_xact_lock(hashtextextended('00000000-0000-4000-8000-000000000003', 0));
+SELECT pg_sleep(1);
+SELECT report_create_atomic('00000000-0000-4000-8000-000000000003', 'other', 'category-v1', 'g4b1-lock-a');
+COMMIT;
+SQL
+lock_pid_a=$!
+sleep 0.2
+run_as heisei_report_login >"$lock_b" 2>&1 <<'SQL' &
+SET ROLE heisei_report_writer;
+SET app.user_id = '00000000-0000-4000-8000-000000000002';
+SELECT report_create_atomic('00000000-0000-4000-8000-000000000003', 'other', 'category-v1', 'g4b1-lock-b');
+SQL
+lock_pid_b=$!
+wait "$lock_pid_a"
+lock_status_a=$?
+wait "$lock_pid_b"
+lock_status_b=$?
+set -e
+lock_audit_count="$(psql_file -Atqc "SELECT count(*) FROM audit_logs WHERE request_id IN ('g4b1-lock-a', 'g4b1-lock-b')")"
+rm -f "$lock_a" "$lock_b"
+if [[ "$lock_status_a" != 0 ]] || [[ "$lock_status_b" != 0 ]] || [[ "$lock_audit_count" != 2 ]]; then
+  echo "FAIL: advisory-lock barrier did not serialize two atomic admissions" >&2
+  exit 1
+fi
+psql_file <<'SQL' >/dev/null
+DELETE FROM reports
+WHERE target_user_id = '00000000-0000-4000-8000-000000000003'
+  AND reporter_user_id IN ('00000000-0000-4000-8000-000000000001', '00000000-0000-4000-8000-000000000002');
+UPDATE profiles SET profile_visibility = 'private'
+WHERE id = '00000000-0000-4000-8000-000000000003';
+SQL
+echo "PASS: barriered concurrent atomic admissions serialize by target lock"
+
+expect_failure "atomic audit failure rollback" run_as heisei_report_login <<'SQL'
+SET ROLE heisei_report_writer;
+SET app.user_id = '00000000-0000-4000-8000-000000000003';
+SELECT report_create_atomic('00000000-0000-4000-8000-000000000001', 'other', 'category-v1', repeat('x', 129));
+SQL
+atomic_rollback_count="$(psql_file -Atqc "SELECT count(*) FROM reports WHERE reporter_user_id = '00000000-0000-4000-8000-000000000003' AND target_user_id = '00000000-0000-4000-8000-000000000001' AND category = 'other'")"
+test "$atomic_rollback_count" = 1
+echo "PASS: atomic audit failure rolls back report insert"
 
 # Owner: safe profile columns are writable, but privileged columns are not.
 run_as heisei_app_login <<'SQL' >/dev/null
@@ -584,12 +734,12 @@ SET ROLE heisei_report_writer;
 SET app.user_id = '00000000-0000-4000-8000-000000000003';
 BEGIN;
 INSERT INTO reports (reporter_user_id, target_type, target_user_id, category, category_version)
-VALUES (current_setting('app.user_id')::uuid, 'user', '00000000-0000-4000-8000-000000000001', 'other', 'category-v1');
+VALUES (current_setting('app.user_id')::uuid, 'user', '00000000-0000-4000-8000-000000000003', 'other', 'category-v1');
 INSERT INTO audit_logs (actor_user_id, target_user_id, action, rule_version, request_id)
-VALUES (current_setting('app.user_id')::uuid, '00000000-0000-4000-8000-000000000001', 'profile.update', '003i-g4a', 'g4a-atomic-failure');
+VALUES (current_setting('app.user_id')::uuid, '00000000-0000-4000-8000-000000000003', 'profile.update', '003i-g4a', 'g4a-atomic-failure');
 COMMIT;
 SQL
-rollback_count="$(psql_file -Atqc "SELECT count(*) FROM reports WHERE reporter_user_id = '00000000-0000-4000-8000-000000000003' AND target_user_id = '00000000-0000-4000-8000-000000000001'" )"
+rollback_count="$(psql_file -Atqc "SELECT count(*) FROM reports WHERE reporter_user_id = '00000000-0000-4000-8000-000000000003' AND target_user_id = '00000000-0000-4000-8000-000000000003'" )"
 test "$rollback_count" = 0
 echo "PASS: audit failure rolls back report INSERT"
 
@@ -650,6 +800,7 @@ psql_file < "$repo_root/packages/database/drizzle/0000_auth_foundation.sql" >/de
 psql_file < "$repo_root/packages/database/drizzle/roles.sql" >/dev/null
 psql_file < "$repo_root/packages/database/drizzle/0001_profile_visibility.sql" >/dev/null
 psql_file < "$repo_root/packages/database/drizzle/0002_report_foundation_g4a.sql" >/dev/null
+psql_file < "$repo_root/packages/database/drizzle/0003_report_atomic_boundary_g4b1.sql" >/dev/null
 psql_file < "$repo_root/packages/database/drizzle/roles.sql" >/dev/null
 echo "PASS: migration first application and reapplication"
 echo "PASS: PostgreSQL RLS integration checks"

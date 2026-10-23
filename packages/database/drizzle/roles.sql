@@ -28,6 +28,9 @@ BEGIN
   IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'heisei_report_writer') THEN
     CREATE ROLE heisei_report_writer NOLOGIN NOSUPERUSER NOBYPASSRLS;
   END IF;
+  IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'heisei_report_tx_writer') THEN
+    CREATE ROLE heisei_report_tx_writer NOLOGIN NOSUPERUSER NOBYPASSRLS;
+  END IF;
   IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'heisei_report_ttl_writer') THEN
     CREATE ROLE heisei_report_ttl_writer NOLOGIN NOSUPERUSER NOBYPASSRLS;
   END IF;
@@ -41,6 +44,7 @@ ALTER ROLE heisei_profile_writer NOSUPERUSER NOBYPASSRLS NOLOGIN;
 ALTER ROLE heisei_block_writer NOSUPERUSER NOBYPASSRLS NOLOGIN;
 ALTER ROLE heisei_visibility_reader NOSUPERUSER NOBYPASSRLS NOLOGIN;
 ALTER ROLE heisei_report_writer NOSUPERUSER NOBYPASSRLS NOLOGIN;
+ALTER ROLE heisei_report_tx_writer NOSUPERUSER NOBYPASSRLS NOLOGIN;
 ALTER ROLE heisei_report_ttl_writer NOSUPERUSER NOBYPASSRLS NOLOGIN;
 
 REVOKE ALL ON profiles, user_verifications, user_settings, blocks, audit_logs FROM heisei_app;
@@ -103,5 +107,14 @@ BEGIN
     EXECUTE 'REVOKE ALL ON profiles, blocks FROM heisei_visibility_reader';
     EXECUTE 'GRANT SELECT (id, account_status, profile_visibility) ON profiles TO heisei_visibility_reader';
     EXECUTE 'GRANT SELECT ON blocks TO heisei_visibility_reader';
+  END IF;
+END $$;
+
+DO $$
+BEGIN
+  IF to_regclass('public.reports') IS NOT NULL
+    AND to_regprocedure('public.report_create_atomic(uuid,character varying,character varying,character varying)') IS NOT NULL THEN
+    EXECUTE 'REVOKE ALL ON FUNCTION report_create_atomic(uuid, varchar, varchar, varchar) FROM PUBLIC';
+    EXECUTE 'GRANT EXECUTE ON FUNCTION report_create_atomic(uuid, varchar, varchar, varchar) TO heisei_report_writer';
   END IF;
 END $$;
