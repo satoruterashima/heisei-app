@@ -37,7 +37,9 @@ export const userVerifications = pgTable('user_verifications', {
   createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
   updatedAt: timestamp('updated_at', { withTimezone: true }).defaultNow().notNull(),
 }, (table) => ({
-  activeVerificationUnique: uniqueIndex('user_verifications_active_unique').on(table.userId, table.kind, table.status),
+  verifiedVerificationUnique: uniqueIndex('user_verifications_verified_unique')
+    .on(table.userId, table.kind)
+    .where(sql`${table.status} = 'verified'`),
   userIndex: index('user_verifications_user_id_idx').on(table.userId),
   statusCheck: check('user_verifications_status_check', sql`${table.status} in ('pending', 'verified', 'rejected', 'revoked')`),
 }));

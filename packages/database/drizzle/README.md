@@ -7,15 +7,19 @@ approved process. The source of truth for authorization is the server-loaded
 `auth_subject`, `auth_level`, `membership`, `roles_json`, `account_status`, and
 `user_verifications`; the legacy boolean is not used by the identity adapter.
 
-Before applying locally, create a new disposable PostgreSQL database and a
-non-privileged test role. Set `app.user_id` and, for a single approved staff
-non-privileged test role. The staff-scoped policies additionally require the
-database role `heisei_staff`; set `app.user_id` and, for a single approved staff
-target, `app.staff_scope` with `SET LOCAL` inside each transaction. Never use a
-superuser or service role to claim RLS coverage.
+Before applying locally, create a new disposable PostgreSQL database and apply
+`roles.sql` after the schema migration. The application role receives only safe
+profile columns; the privileged identity columns have no UPDATE grant. Staff
+queries require the separate `heisei_staff` database role as well as an approved
+scope. Audit INSERT requires `heisei_audit_writer` and `app.audit_actor_id`; a
+normal application role cannot forge events. Authentication evidence and the
+privileged profile columns are written only through the separate
+`heisei_identity_writer` role.
 
 ```sh
+psql "$LOCAL_DATABASE_URL" -v ON_ERROR_STOP=1 -f packages/database/drizzle/0000_baseline_profiles.sql
 psql "$LOCAL_DATABASE_URL" -v ON_ERROR_STOP=1 -f packages/database/drizzle/0000_auth_foundation.sql
+psql "$LOCAL_DATABASE_URL" -v ON_ERROR_STOP=1 -f packages/database/drizzle/roles.sql
 ```
 
 Re-running the migration is intended to be idempotent. A rollback is performed by

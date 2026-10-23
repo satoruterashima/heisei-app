@@ -12,12 +12,12 @@ const claims: JwtClaims = {
 function record(overrides: Partial<IdentityRecord> = {}): IdentityRecord {
   return {
     authSubject: 'subject-1',
-    userId: 'user-1',
+    userId: '00000000-0000-4000-8000-000000000001',
     authLevel: 1,
     membership: 'free',
     roles: ['member'],
     accountStatus: 'active',
-    verifiedKinds: ['email'],
+    verifications: [{ kind: 'email_verified', status: 'verified' }],
     ...overrides,
   };
 }
@@ -26,7 +26,7 @@ describe('DatabaseIdentityLoader', () => {
   it('loads current authorization state from a trusted record', async () => {
     const loader = new DatabaseIdentityLoader({ findByAuthSubject: async () => record() });
     await expect(loader.load('subject-1', claims)).resolves.toEqual({
-      userId: 'user-1',
+      userId: '00000000-0000-4000-8000-000000000001',
       authLevel: 1,
       membership: 'free',
       roles: ['member'],
@@ -36,7 +36,7 @@ describe('DatabaseIdentityLoader', () => {
 
   it.each([
     ['unknown subject', record({ authSubject: 'other' }), 'subject-1'],
-    ['verification missing', record({ verifiedKinds: [] }), 'subject-1'],
+    ['verification missing', record({ verifications: [] }), 'subject-1'],
     ['malformed role', record({ roles: ['admin', 'unknown'] }), 'subject-1'],
   ])('rejects %s', async (_name, row, subject) => {
     const loader = new DatabaseIdentityLoader({ findByAuthSubject: async () => row });
@@ -52,6 +52,43 @@ describe('DatabaseIdentityLoader', () => {
     expect(
       authorize({ context: identity ? { claims, identity } : null }),
     ).toEqual({ allowed: false, reason: 'account_not_active' });
+  });
+
+  it('does not allow email evidence alone to reach L3', async () => {
+    const loader = new DatabaseIdentityLoader({
+      findByAuthSubject: async () => record({ authLevel: 3 }),
+    });
+    await expect(loader.load('subject-1', claims)).resolves.toBeNull();
+  });
+
+  it('requires verified evidence and rejects pending or revoked evidence', async () => {
+    const loader = new DatabaseIdentityLoader({
+      findByAuthSubject: async () =>
+        record({
+          authLevel: 2,
+          verifications: [
+            { kind: 'email_verified', status: 'verified' },
+            { kind: 'phone_verified', status: 'revoked' },
+            { kind: 'age_self_declared', status: 'pending' },
+          ],
+        }),
+    });
+    await expect(loader.load('subject-1', claims)).resolves.toBeNull();
+  });
+
+  it('accepts a level only when its complete approved evidence is verified', async () => {
+    const loader = new DatabaseIdentityLoader({
+      findByAuthSubject: async () =>
+        record({
+          authLevel: 2,
+          verifications: [
+            { kind: 'email_verified', status: 'verified' },
+            { kind: 'phone_verified', status: 'verified' },
+            { kind: 'age_self_declared', status: 'verified' },
+          ],
+        }),
+    });
+    await expect(loader.load('subject-1', claims)).resolves.toMatchObject({ authLevel: 2 });
   });
 
   it('fails closed for an unavailable database or mismatched subject', async () => {

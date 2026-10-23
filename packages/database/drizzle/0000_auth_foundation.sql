@@ -40,10 +40,14 @@ CREATE TABLE IF NOT EXISTS user_verifications (
   verification_version varchar(40) NOT NULL,
   created_at timestamptz NOT NULL DEFAULT now(),
   updated_at timestamptz NOT NULL DEFAULT now(),
-  CONSTRAINT user_verifications_status_check CHECK (status IN ('pending', 'verified', 'rejected', 'revoked')),
-  CONSTRAINT user_verifications_active_unique UNIQUE (user_id, kind, status)
+  CONSTRAINT user_verifications_status_check CHECK (status IN ('pending', 'verified', 'rejected', 'revoked'))
 );
 CREATE INDEX IF NOT EXISTS user_verifications_user_id_idx ON user_verifications(user_id);
+ALTER TABLE user_verifications DROP CONSTRAINT IF EXISTS user_verifications_active_unique;
+DROP INDEX IF EXISTS user_verifications_active_unique;
+CREATE UNIQUE INDEX IF NOT EXISTS user_verifications_verified_unique
+  ON user_verifications(user_id, kind)
+  WHERE status = 'verified';
 
 CREATE TABLE IF NOT EXISTS user_settings (
   user_id uuid PRIMARY KEY REFERENCES profiles(id),
@@ -79,13 +83,19 @@ CREATE INDEX IF NOT EXISTS audit_logs_actor_user_id_idx ON audit_logs(actor_user
 CREATE INDEX IF NOT EXISTS audit_logs_target_user_id_idx ON audit_logs(target_user_id);
 CREATE INDEX IF NOT EXISTS audit_logs_created_at_idx ON audit_logs(created_at);
 
--- The API sets these transaction-local settings using a non-privileged role:
--- app.user_id = authenticated profile UUID; app.staff_scope = one approved target UUID.
+-- The API sets these transaction-local settings through the dedicated roles:
+-- app.user_id = authenticated profile UUID; app.staff_scope = one approved target UUID;
+-- app.audit_actor_id = actor UUID for the trusted audit writer.
 ALTER TABLE profiles ENABLE ROW LEVEL SECURITY;
 ALTER TABLE user_verifications ENABLE ROW LEVEL SECURITY;
 ALTER TABLE user_settings ENABLE ROW LEVEL SECURITY;
 ALTER TABLE blocks ENABLE ROW LEVEL SECURITY;
 ALTER TABLE audit_logs ENABLE ROW LEVEL SECURITY;
+
+-- The application role receives only safe profile columns through roles.sql.
+-- These columns must never be granted UPDATE to a general API role.
+REVOKE UPDATE (auth_subject, auth_level, membership, roles_json, account_status) ON profiles FROM PUBLIC;
+REVOKE ALL ON audit_logs FROM PUBLIC;
 
 DROP POLICY IF EXISTS profiles_owner_select ON profiles;
 CREATE POLICY profiles_owner_select ON profiles FOR SELECT
@@ -128,8 +138,9 @@ CREATE POLICY audit_logs_scoped_select ON audit_logs FOR SELECT
       OR (current_user = 'heisei_staff' AND actor_user_id::text = current_setting('app.staff_scope', true))
       OR (current_user = 'heisei_staff' AND target_user_id::text = current_setting('app.staff_scope', true)));
 DROP POLICY IF EXISTS audit_logs_actor_insert ON audit_logs;
-CREATE POLICY audit_logs_actor_insert ON audit_logs FOR INSERT
-  WITH CHECK (actor_user_id::text = current_setting('app.user_id', true)
-      OR (current_user = 'heisei_staff' AND actor_user_id::text = current_setting('app.staff_scope', true)));
+DROP POLICY IF EXISTS audit_logs_trusted_insert ON audit_logs;
+CREATE POLICY audit_logs_trusted_insert ON audit_logs FOR INSERT
+  WITH CHECK (current_user = 'heisei_audit_writer'
+      AND actor_user_id::text = current_setting('app.audit_actor_id', true));
 
 -- No UPDATE/DELETE policies are created for audit_logs: append-only for non-owner roles.

@@ -1,0 +1,36 @@
+-- Local role boundary for HEISEI-003B-R1.
+-- Create matching production roles through the approved platform process; do not
+-- put passwords or service credentials in this file.
+
+DO $$
+BEGIN
+  IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'heisei_app') THEN
+    CREATE ROLE heisei_app NOLOGIN;
+  END IF;
+  IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'heisei_staff') THEN
+    CREATE ROLE heisei_staff NOLOGIN;
+  END IF;
+  IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'heisei_audit_writer') THEN
+    CREATE ROLE heisei_audit_writer NOLOGIN;
+  END IF;
+  IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'heisei_identity_writer') THEN
+    CREATE ROLE heisei_identity_writer NOLOGIN;
+  END IF;
+END $$;
+
+REVOKE ALL ON profiles, user_verifications, user_settings, blocks, audit_logs FROM heisei_app;
+GRANT SELECT ON profiles, user_verifications, user_settings, blocks TO heisei_app;
+GRANT UPDATE (display_name, bio, favorite_genres, avatar_url, updated_at) ON profiles TO heisei_app;
+GRANT INSERT, UPDATE, DELETE ON user_settings TO heisei_app;
+GRANT INSERT, DELETE ON blocks TO heisei_app;
+
+REVOKE ALL ON profiles, user_verifications, user_settings, blocks, audit_logs FROM heisei_staff;
+GRANT SELECT ON profiles, user_verifications, audit_logs TO heisei_staff;
+
+REVOKE ALL ON audit_logs FROM heisei_audit_writer;
+GRANT INSERT ON audit_logs TO heisei_audit_writer;
+
+REVOKE ALL ON profiles, user_verifications FROM heisei_identity_writer;
+GRANT SELECT ON profiles, user_verifications TO heisei_identity_writer;
+GRANT UPDATE (auth_subject, auth_level, membership, roles_json, account_status) ON profiles TO heisei_identity_writer;
+GRANT INSERT, UPDATE ON user_verifications TO heisei_identity_writer;

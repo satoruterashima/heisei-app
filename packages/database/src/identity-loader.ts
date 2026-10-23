@@ -8,8 +8,15 @@ export type IdentityRecord = {
   membership: string;
   roles: readonly string[];
   accountStatus: string;
-  /** Verification kinds are loaded from user_verifications by the store implementation. */
-  verifiedKinds: readonly string[];
+  /** Verification evidence is loaded from user_verifications by the store implementation. */
+  verifications: readonly VerificationEvidence[];
+};
+
+export type VerificationStatus = 'pending' | 'verified' | 'rejected' | 'revoked';
+
+export type VerificationEvidence = {
+  kind: string;
+  status: VerificationStatus;
 };
 
 export interface IdentityRecordStore {
@@ -45,6 +52,20 @@ function isStatus(value: string): value is AccountStatus {
   return statuses.has(value as AccountStatus);
 }
 
+function isUuid(value: string): boolean {
+  return /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(value);
+}
+
+// These are internal evidence categories from the approved level design, not
+// provider names. Unknown or unapproved evidence never upgrades a level.
+const requiredEvidenceByLevel: Record<AuthLevel, readonly string[]> = {
+  0: [],
+  1: ['email_verified'],
+  2: ['email_verified', 'phone_verified', 'age_self_declared'],
+  3: ['email_verified', 'phone_verified', 'age_self_declared', 'age_verified'],
+  4: ['email_verified', 'phone_verified', 'age_self_declared', 'age_verified', 'identity_verified'],
+};
+
 /**
  * Adapter boundary for a trusted DB query. It never verifies a JWT and never
  * accepts authorization attributes from the client.
@@ -58,13 +79,15 @@ export class DatabaseIdentityLoader implements IdentityLoader {
     try {
       const record = await this.store.findByAuthSubject(subject);
       if (!record || record.authSubject !== subject) return null;
+      if (!isUuid(record.userId)) return null;
       if (!isAuthLevel(record.authLevel) || !isMembership(record.membership) || !isStatus(record.accountStatus)) {
         return null;
       }
 
-      // A non-guest authorization level must have an explicit verification row.
-      // The concrete provider and verification kind remain outside this adapter.
-      if (record.authLevel > 0 && record.verifiedKinds.length === 0) return null;
+      const verifiedKinds = new Set(
+        record.verifications.filter((item) => item.status === 'verified').map((item) => item.kind),
+      );
+      if (requiredEvidenceByLevel[record.authLevel].some((kind) => !verifiedKinds.has(kind))) return null;
 
       const loadedRoles = record.roles.filter(isRole);
       if (loadedRoles.length !== record.roles.length) return null;
