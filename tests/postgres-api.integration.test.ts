@@ -153,6 +153,39 @@ describe.skipIf(!container || !databaseUrl)('real JWT → Hono → isolated Post
     expect(result).toEqual({ blockedByActor: true, blockedByTarget: true });
   });
 
+  it('accepts case variants uniformly without an existence oracle', async () => {
+    const mixedTargetId = '00000000-0000-4a00-8000-000000000002';
+    adminSql(`INSERT INTO profiles (id, username, display_name, auth_subject, auth_level) VALUES ('${mixedTargetId}'::uuid, 'mixed-case-target', 'Mixed Case Target', 'mixed-case-target-subject', 2) ON CONFLICT (id) DO NOTHING`);
+    const { verifier, token } = await signedToken();
+    const app = createApiAppWithDatabase({ verifier, executor });
+    const uppercase = mixedTargetId.replace('a', 'A');
+    const existing = await app.request('/api/v1/blocks', {
+      method: 'POST', headers: { authorization: `Bearer ${token}`, 'content-type': 'application/json' },
+      body: JSON.stringify({ targetUserId: uppercase }),
+    });
+    const unknown = await app.request('/api/v1/blocks', {
+      method: 'POST', headers: { authorization: `Bearer ${token}`, 'content-type': 'application/json' },
+      body: JSON.stringify({ targetUserId: '00000000-0000-4a00-8000-000000000003'.replace('a', 'A') }),
+    });
+    expect(existing.status).toBe(202);
+    expect(unknown.status).toBe(202);
+    expect((await existing.json()).data).toEqual((await unknown.json()).data);
+    expect(adminSql(`SELECT count(*)::text FROM blocks WHERE blocker_id = '${userId}'::uuid AND blocked_id = '${mixedTargetId}'::uuid`)).toBe('1');
+    expect(adminSql(`SELECT count(*)::text FROM audit_logs WHERE actor_user_id = '${userId}'::uuid AND target_user_id = '${mixedTargetId}'::uuid AND action = 'block.create'`)).toBe('1');
+    const repeat = await app.request('/api/v1/blocks', {
+      method: 'POST', headers: { authorization: `Bearer ${token}`, 'content-type': 'application/json' },
+      body: JSON.stringify({ targetUserId: mixedTargetId }),
+    });
+    expect(repeat.status).toBe(202);
+    expect(adminSql(`SELECT count(*)::text FROM audit_logs WHERE actor_user_id = '${userId}'::uuid AND target_user_id = '${mixedTargetId}'::uuid AND action = 'block.create'`)).toBe('1');
+    const removed = await app.request(`/api/v1/blocks/by-target/${uppercase}`, { method: 'DELETE', headers: { authorization: `Bearer ${token}` } });
+    expect(removed.status).toBe(202);
+    expect(adminSql(`SELECT count(*)::text FROM blocks WHERE blocker_id = '${userId}'::uuid AND blocked_id = '${mixedTargetId}'::uuid`)).toBe('0');
+    adminSql(`DELETE FROM blocks WHERE blocker_id = '${userId}'::uuid AND blocked_id = '${mixedTargetId}'::uuid`);
+    adminSql(`DELETE FROM audit_logs WHERE target_user_id = '${mixedTargetId}'::uuid`);
+    adminSql(`DELETE FROM profiles WHERE id = '${mixedTargetId}'::uuid`);
+  });
+
   it('creates and removes only the actor-owned block through real JWT and RLS', async () => {
     const { verifier, token } = await signedToken();
     const app = createApiAppWithDatabase({ verifier, executor });

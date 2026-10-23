@@ -142,9 +142,11 @@ export function createApiApp(authOrOptions?: AuthMiddlewareOptions | ApiOptions)
       const status = error instanceof RequestTooLarge ? 413 : 400;
       return c.json({ error: { code: 'invalid_request', message: status === 413 ? 'Block request too large' : 'Valid JSON body is required' }, requestId }, status, { 'Cache-Control': 'no-store', 'X-Request-ID': requestId });
     }
-    if (!isStrictBlockBody(body) || body.targetUserId === identity.userId) return c.json({ error: { code: 'validation_failed', message: 'Block target is invalid' }, requestId }, 422, { 'Cache-Control': 'no-store', 'X-Request-ID': requestId });
+    const actorUserId = normalizeUuid(identity.userId);
+    const targetUserId = isStrictBlockBody(body) ? normalizeUuid(body.targetUserId) : null;
+    if (!actorUserId || !targetUserId || targetUserId === actorUserId) return c.json({ error: { code: 'validation_failed', message: 'Block target is invalid' }, requestId }, 422, { 'Cache-Control': 'no-store', 'X-Request-ID': requestId });
     try {
-      await options.blockStore.blockOwn(identity.userId, body.targetUserId, requestId);
+      await options.blockStore.blockOwn(actorUserId, targetUserId, requestId);
       return c.json({ data: { accepted: true }, requestId }, 202, { 'Cache-Control': 'no-store', 'X-Request-ID': requestId });
     } catch {
       return c.json({ error: { code: 'internal_error', message: 'Block operation failed' }, requestId }, 500, { 'Cache-Control': 'no-store', 'X-Request-ID': requestId });
@@ -157,10 +159,11 @@ export function createApiApp(authOrOptions?: AuthMiddlewareOptions | ApiOptions)
     const decision = authorize({ context: { identity, claims }, request: { minimumAuthLevel: 2 } });
     if (!decision.allowed) return c.json({ error: { code: 'forbidden', message: 'Block operation is not allowed' }, requestId }, 403, { 'Cache-Control': 'no-store', 'X-Request-ID': requestId });
     if (!options.blockStore) return c.json({ error: { code: 'service_unavailable', message: 'Block storage is not configured' }, requestId }, 503);
-    const targetUserId = c.req.param('targetUserId');
-    if (!isUuid(targetUserId)) return c.json({ error: { code: 'invalid_request', message: 'Target user id is invalid' }, requestId }, 400, { 'Cache-Control': 'no-store', 'X-Request-ID': requestId });
+    const actorUserId = normalizeUuid(identity.userId);
+    const targetUserId = normalizeUuid(c.req.param('targetUserId'));
+    if (!actorUserId || !targetUserId) return c.json({ error: { code: 'invalid_request', message: 'Target user id is invalid' }, requestId }, 400, { 'Cache-Control': 'no-store', 'X-Request-ID': requestId });
     try {
-      await options.blockStore.unblockTargetOwn(identity.userId, targetUserId, requestId);
+      await options.blockStore.unblockTargetOwn(actorUserId, targetUserId, requestId);
       return c.json({ data: { accepted: true }, requestId }, 202, { 'Cache-Control': 'no-store', 'X-Request-ID': requestId });
     } catch {
       return c.json({ error: { code: 'internal_error', message: 'Block operation failed' }, requestId }, 500, { 'Cache-Control': 'no-store', 'X-Request-ID': requestId });
@@ -173,10 +176,11 @@ export function createApiApp(authOrOptions?: AuthMiddlewareOptions | ApiOptions)
     const decision = authorize({ context: { identity, claims }, request: { minimumAuthLevel: 2 } });
     if (!decision.allowed) return c.json({ error: { code: 'forbidden', message: 'Block operation is not allowed' }, requestId }, 403, { 'Cache-Control': 'no-store', 'X-Request-ID': requestId });
     if (!options.blockStore) return c.json({ error: { code: 'service_unavailable', message: 'Block storage is not configured' }, requestId }, 503);
-    const blockId = c.req.param('id');
-    if (!isUuid(blockId)) return c.json({ error: { code: 'invalid_request', message: 'Block id is invalid' }, requestId }, 400, { 'Cache-Control': 'no-store', 'X-Request-ID': requestId });
+    const actorUserId = normalizeUuid(identity.userId);
+    const blockId = normalizeUuid(c.req.param('id'));
+    if (!actorUserId || !blockId) return c.json({ error: { code: 'invalid_request', message: 'Block id is invalid' }, requestId }, 400, { 'Cache-Control': 'no-store', 'X-Request-ID': requestId });
     try {
-      await options.blockStore.unblockOwn(identity.userId, blockId, requestId);
+      await options.blockStore.unblockOwn(actorUserId, blockId, requestId);
       return c.json({ data: { accepted: true }, requestId }, 202, { 'Cache-Control': 'no-store', 'X-Request-ID': requestId });
     } catch {
       return c.json({ error: { code: 'internal_error', message: 'Block operation failed' }, requestId }, 500, { 'Cache-Control': 'no-store', 'X-Request-ID': requestId });
@@ -289,6 +293,10 @@ async function readLimitedJson(request: Request, maximumBytes: number): Promise<
 
 function isUuid(value: string): boolean {
   return /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/iu.test(value);
+}
+
+function normalizeUuid(value: string): string | null {
+  return isUuid(value) ? value.toLowerCase() : null;
 }
 
 function isStrictBlockBody(value: unknown): value is { targetUserId: string } {

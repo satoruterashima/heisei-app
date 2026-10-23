@@ -141,6 +141,10 @@ function isUuid(value: string): boolean {
   return /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(value);
 }
 
+function normalizeUuid(value: string): string | null {
+  return isUuid(value) ? value.toLowerCase() : null;
+}
+
 /** Only a missing target reference is masked; unrelated FK/audit errors remain failures. */
 function isUnknownBlockTarget(error: unknown): boolean {
   if (typeof error !== 'object' || error === null) return false;
@@ -153,17 +157,19 @@ export class PostgresBlockMutationStore implements BlockMutationStore {
   constructor(private readonly executor: TrustedPostgresExecutor) {}
 
   async blockOwn(actorUserId: string, targetUserId: string, requestId: string): Promise<void> {
-    if (!isUuid(actorUserId) || !isUuid(targetUserId) || actorUserId === targetUserId || !requestId || requestId.length > 128) {
+    const actor = normalizeUuid(actorUserId);
+    const target = normalizeUuid(targetUserId);
+    if (!actor || !target || actor === target || !requestId || requestId.length > 128) {
       throw new Error('invalid block mutation');
     }
     if (!this.executor.withBlockWriter) throw new Error('block writer is unavailable');
     try {
-      return await this.executor.withBlockWriter(actorUserId, async (query) => {
-        const inserted = await query.query<{ block_id: string; target_user_id: string }>(blockInsertSql, [actorUserId, targetUserId]);
+      return await this.executor.withBlockWriter(actor, async (query) => {
+        const inserted = await query.query<{ block_id: string; target_user_id: string }>(blockInsertSql, [actor, target]);
         const row = inserted.rows[0];
         if (!row) return;
-        if (typeof row.block_id !== 'string' || row.target_user_id !== targetUserId) throw new Error('invalid block row');
-        await query.query(blockAuditSql, [actorUserId, targetUserId, 'block.create', requestId]);
+        if (typeof row.block_id !== 'string' || row.target_user_id !== target) throw new Error('invalid block row');
+        await query.query(blockAuditSql, [actor, target, 'block.create', requestId]);
       });
     } catch (error) {
       // A missing target is intentionally indistinguishable from an accepted
@@ -174,26 +180,32 @@ export class PostgresBlockMutationStore implements BlockMutationStore {
   }
 
   async unblockOwn(actorUserId: string, blockId: string, requestId: string): Promise<void> {
-    if (!isUuid(actorUserId) || !isUuid(blockId) || !requestId || requestId.length > 128) throw new Error('invalid block mutation');
+    const actor = normalizeUuid(actorUserId);
+    const id = normalizeUuid(blockId);
+    if (!actor || !id || !requestId || requestId.length > 128) throw new Error('invalid block mutation');
     if (!this.executor.withBlockWriter) throw new Error('block writer is unavailable');
-    return this.executor.withBlockWriter(actorUserId, async (query) => {
-      const deleted = await query.query<{ target_user_id: string }>(blockDeleteSql, [blockId]);
+    return this.executor.withBlockWriter(actor, async (query) => {
+      const deleted = await query.query<{ target_user_id: string }>(blockDeleteSql, [id]);
       const row = deleted.rows[0];
       if (!row || typeof row.target_user_id !== 'string') return;
-      await query.query(blockAuditSql, [actorUserId, row.target_user_id, 'block.delete', requestId]);
+      const target = normalizeUuid(row.target_user_id);
+      if (!target) throw new Error('invalid block row');
+      await query.query(blockAuditSql, [actor, target, 'block.delete', requestId]);
     });
   }
 
   async unblockTargetOwn(actorUserId: string, targetUserId: string, requestId: string): Promise<void> {
-    if (!isUuid(actorUserId) || !isUuid(targetUserId) || !requestId || requestId.length > 128) throw new Error('invalid block mutation');
+    const actor = normalizeUuid(actorUserId);
+    const target = normalizeUuid(targetUserId);
+    if (!actor || !target || !requestId || requestId.length > 128) throw new Error('invalid block mutation');
     if (!this.executor.withBlockWriter) throw new Error('block writer is unavailable');
-    return this.executor.withBlockWriter(actorUserId, async (query) => {
-      const deleted = await query.query<{ target_user_id: string }>(blockDeleteByTargetSql, [actorUserId, targetUserId]);
+    return this.executor.withBlockWriter(actor, async (query) => {
+      const deleted = await query.query<{ target_user_id: string }>(blockDeleteByTargetSql, [actor, target]);
       if (deleted.rows.length > 1) throw new Error('unexpected block row count');
       const row = deleted.rows[0];
       if (!row) return;
-      if (row.target_user_id.toLowerCase() !== targetUserId.toLowerCase()) throw new Error('inconsistent block target');
-      await query.query(blockAuditSql, [actorUserId, targetUserId, 'block.delete', requestId]);
+      if (normalizeUuid(row.target_user_id) !== target) throw new Error('inconsistent block target');
+      await query.query(blockAuditSql, [actor, target, 'block.delete', requestId]);
     });
   }
 }
