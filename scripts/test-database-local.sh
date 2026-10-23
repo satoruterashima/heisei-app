@@ -61,6 +61,8 @@ psql_file() {
 psql_file < "$repo_root/packages/database/drizzle/0000_baseline_profiles.sql" >/dev/null
 psql_file < "$repo_root/packages/database/drizzle/0000_auth_foundation.sql" >/dev/null
 psql_file < "$repo_root/packages/database/drizzle/roles.sql" >/dev/null
+psql_file < "$repo_root/packages/database/drizzle/0001_report_foundation_g4a.sql" >/dev/null
+psql_file < "$repo_root/packages/database/drizzle/roles.sql" >/dev/null
 echo "PASS: initial migration and role grants applied"
 
 psql_file <<'SQL' >/dev/null
@@ -68,16 +70,19 @@ CREATE ROLE heisei_app_login LOGIN PASSWORD 'local-only-app' NOSUPERUSER NOBYPAS
 CREATE ROLE heisei_staff_login LOGIN PASSWORD 'local-only-staff' NOSUPERUSER NOBYPASSRLS;
 CREATE ROLE heisei_identity_login LOGIN PASSWORD 'local-only-identity' NOSUPERUSER NOBYPASSRLS;
 CREATE ROLE heisei_audit_login LOGIN PASSWORD 'local-only-audit' NOSUPERUSER NOBYPASSRLS;
+CREATE ROLE heisei_report_login LOGIN PASSWORD 'local-only-report' NOSUPERUSER NOBYPASSRLS;
 GRANT heisei_app TO heisei_app_login;
 GRANT heisei_staff TO heisei_staff_login;
 GRANT heisei_identity_writer TO heisei_identity_login;
 GRANT heisei_audit_writer TO heisei_audit_login;
+GRANT heisei_report_writer TO heisei_report_login;
 GRANT USAGE ON SCHEMA public TO heisei_app_login, heisei_staff_login,
-  heisei_identity_login, heisei_audit_login;
+  heisei_identity_login, heisei_audit_login, heisei_report_login;
 INSERT INTO profiles (id, username, display_name, auth_subject, auth_level)
 VALUES
   ('00000000-0000-4000-8000-000000000001', 'r2-user-1', 'R2 User 1', 'r2-subject-1', 1),
-  ('00000000-0000-4000-8000-000000000002', 'r2-user-2', 'R2 User 2', 'r2-subject-2', 1);
+  ('00000000-0000-4000-8000-000000000002', 'r2-user-2', 'R2 User 2', 'r2-subject-2', 1),
+  ('00000000-0000-4000-8000-000000000003', 'r2-user-3', 'R2 User 3', 'r2-subject-3', 1);
 INSERT INTO user_verifications (user_id, kind, status, verification_version)
 VALUES ('00000000-0000-4000-8000-000000000001', 'email_verified', 'verified', 'r2-test');
 SQL
@@ -240,6 +245,204 @@ SET app.user_id = '00000000-0000-4000-8000-000000000001';
 INSERT INTO audit_logs (actor_user_id, action, rule_version)
 VALUES (current_setting('app.user_id')::uuid, 'forged', 'r2-test');
 SQL
+
+expect_failure "general user report INSERT" run_as heisei_app_login <<'SQL'
+SET ROLE heisei_app;
+SET app.user_id = '00000000-0000-4000-8000-000000000001';
+INSERT INTO reports (reporter_user_id, target_type, target_user_id, category, category_version)
+VALUES (current_setting('app.user_id')::uuid, 'user', '00000000-0000-4000-8000-000000000002', 'spam', 'category-v1');
+SQL
+
+run_as heisei_report_login <<'SQL' >/dev/null
+SET ROLE heisei_report_writer;
+SET app.user_id = '00000000-0000-4000-8000-000000000001';
+INSERT INTO reports (reporter_user_id, target_type, target_user_id, category, category_version)
+VALUES (current_setting('app.user_id')::uuid, 'user', '00000000-0000-4000-8000-000000000002', 'spam', 'category-v1');
+SQL
+echo "PASS: report writer own report INSERT"
+
+own_report_count="$(run_as heisei_report_login -At <<'SQL'
+SET ROLE heisei_report_writer;
+SET app.user_id = '00000000-0000-4000-8000-000000000001';
+SELECT count(*) FROM reports WHERE reporter_user_id = '00000000-0000-4000-8000-000000000001';
+SQL
+)"
+test "$own_report_count" = 1
+echo "PASS: report writer own report SELECT"
+
+other_report_count="$(run_as heisei_report_login -At <<'SQL'
+SET ROLE heisei_report_writer;
+SET app.user_id = '00000000-0000-4000-8000-000000000002';
+SELECT count(*) FROM reports WHERE reporter_user_id = '00000000-0000-4000-8000-000000000001';
+SQL
+)"
+test "$other_report_count" = 0
+echo "PASS: report writer other-actor report SELECT denied by RLS"
+
+expect_failure "report writer other-actor INSERT" run_as heisei_report_login <<'SQL'
+SET ROLE heisei_report_writer;
+SET app.user_id = '00000000-0000-4000-8000-000000000001';
+INSERT INTO reports (reporter_user_id, target_type, target_user_id, category, category_version)
+VALUES ('00000000-0000-4000-8000-000000000002', 'user', '00000000-0000-4000-8000-000000000003', 'spam', 'category-v1');
+SQL
+
+expect_failure "report writer UPDATE" run_as heisei_report_login <<'SQL'
+SET ROLE heisei_report_writer;
+SET app.user_id = '00000000-0000-4000-8000-000000000001';
+UPDATE reports SET category = 'fraud';
+SQL
+expect_failure "report writer DELETE" run_as heisei_report_login <<'SQL'
+SET ROLE heisei_report_writer;
+SET app.user_id = '00000000-0000-4000-8000-000000000001';
+DELETE FROM reports;
+SQL
+
+expect_failure "pending duplicate" run_as heisei_report_login <<'SQL'
+SET ROLE heisei_report_writer;
+SET app.user_id = '00000000-0000-4000-8000-000000000001';
+INSERT INTO reports (reporter_user_id, target_type, target_user_id, category, category_version)
+VALUES (current_setting('app.user_id')::uuid, 'user', '00000000-0000-4000-8000-000000000002', 'fraud', 'category-v1');
+SQL
+duplicate_category="$(run_as heisei_report_login -At <<'SQL'
+SET ROLE heisei_report_writer;
+SET app.user_id = '00000000-0000-4000-8000-000000000001';
+SELECT category FROM reports WHERE reporter_user_id = current_setting('app.user_id')::uuid AND target_user_id = '00000000-0000-4000-8000-000000000002';
+SQL
+)"
+test "$duplicate_category" = spam
+echo "PASS: pending duplicate preserves existing report"
+
+run_as heisei_report_login <<'SQL' >/dev/null
+SET ROLE heisei_report_writer;
+SET app.user_id = '00000000-0000-4000-8000-000000000002';
+INSERT INTO reports (reporter_user_id, target_type, target_user_id, category, category_version)
+VALUES (current_setting('app.user_id')::uuid, 'user', '00000000-0000-4000-8000-000000000002', 'spam', 'category-v1');
+INSERT INTO reports (reporter_user_id, target_type, target_user_id, category, category_version)
+VALUES (current_setting('app.user_id')::uuid, 'user', '00000000-0000-4000-8000-000000000003', 'fraud', 'category-v1');
+SQL
+echo "PASS: independent reporter and target pending rows"
+
+concurrent_a="$(mktemp)"
+concurrent_b="$(mktemp)"
+set +e
+run_as heisei_report_login >"$concurrent_a" 2>&1 <<'SQL' &
+SET ROLE heisei_report_writer;
+SET app.user_id = '00000000-0000-4000-8000-000000000001';
+INSERT INTO reports (reporter_user_id, target_type, target_user_id, category, category_version)
+VALUES (current_setting('app.user_id')::uuid, 'user', '00000000-0000-4000-8000-000000000003', 'spam', 'category-v1');
+SQL
+concurrent_pid_a=$!
+run_as heisei_report_login >"$concurrent_b" 2>&1 <<'SQL' &
+SET ROLE heisei_report_writer;
+SET app.user_id = '00000000-0000-4000-8000-000000000001';
+INSERT INTO reports (reporter_user_id, target_type, target_user_id, category, category_version)
+VALUES (current_setting('app.user_id')::uuid, 'user', '00000000-0000-4000-8000-000000000003', 'fraud', 'category-v1');
+SQL
+concurrent_pid_b=$!
+wait "$concurrent_pid_a"
+concurrent_status_a=$?
+wait "$concurrent_pid_b"
+concurrent_status_b=$?
+set -e
+concurrent_count="$(psql_file -Atqc "SELECT count(*) FROM reports WHERE reporter_user_id = '00000000-0000-4000-8000-000000000001' AND target_user_id = '00000000-0000-4000-8000-000000000003'")"
+rm -f "$concurrent_a" "$concurrent_b"
+if [[ "$concurrent_count" != "1" ]] || [[ "$concurrent_status_a" == "$concurrent_status_b" ]]; then
+  echo "FAIL: concurrent pending INSERT did not produce exactly one row" >&2
+  exit 1
+fi
+echo "PASS: concurrent pending INSERT keeps one row"
+
+expect_failure "partial encryption envelope" run_as heisei_report_login <<'SQL'
+SET ROLE heisei_report_writer;
+SET app.user_id = '00000000-0000-4000-8000-000000000001';
+INSERT INTO reports (reporter_user_id, target_type, target_user_id, category, category_version, description_ciphertext)
+VALUES (current_setting('app.user_id')::uuid, 'user', '00000000-0000-4000-8000-000000000003', 'other', 'category-v1', decode('01', 'hex'));
+SQL
+
+expect_failure "general user idempotency INSERT" run_as heisei_app_login <<'SQL'
+SET ROLE heisei_app;
+SET app.user_id = '00000000-0000-4000-8000-000000000001';
+INSERT INTO report_idempotency (reporter_user_id, reporter_scope_digest, payload_fingerprint, fingerprint_algorithm_version, fingerprint_key_version, expires_at)
+VALUES (current_setting('app.user_id')::uuid, decode(repeat('01', 32), 'hex'), decode(repeat('02', 32), 'hex'), 'hmac-sha256-v1', 'hmac-v1', now() + interval '30 days');
+SQL
+
+run_as heisei_report_login <<'SQL' >/dev/null
+SET ROLE heisei_report_writer;
+SET app.user_id = '00000000-0000-4000-8000-000000000001';
+INSERT INTO report_idempotency (reporter_user_id, reporter_scope_digest, payload_fingerprint, fingerprint_algorithm_version, fingerprint_key_version, expires_at)
+VALUES (current_setting('app.user_id')::uuid, decode(repeat('01', 32), 'hex'), decode(repeat('02', 32), 'hex'), 'hmac-sha256-v1', 'hmac-v1', now() + interval '30 days');
+SQL
+echo "PASS: report idempotency writer INSERT"
+
+null_report_reference_count="$(run_as heisei_report_login -At <<'SQL'
+SET ROLE heisei_report_writer;
+SET app.user_id = '00000000-0000-4000-8000-000000000001';
+SELECT count(*) FROM report_idempotency WHERE reporter_user_id = current_setting('app.user_id')::uuid AND report_id IS NULL;
+SQL
+)"
+test "$null_report_reference_count" = 1
+echo "PASS: idempotency record supports nullable report reference"
+
+expect_failure "report writer idempotency UPDATE" run_as heisei_report_login <<'SQL'
+SET ROLE heisei_report_writer;
+SET app.user_id = '00000000-0000-4000-8000-000000000001';
+UPDATE report_idempotency SET last_used_at = now();
+SQL
+
+expect_failure "report audit non-allowlisted event" run_as heisei_report_login <<'SQL'
+SET ROLE heisei_report_writer;
+SET app.user_id = '00000000-0000-4000-8000-000000000001';
+INSERT INTO audit_logs (actor_user_id, target_user_id, action, rule_version, request_id)
+VALUES (current_setting('app.user_id')::uuid, '00000000-0000-4000-8000-000000000002', 'profile.update', '003i-g4a', 'g4a-negative');
+SQL
+expect_failure "report audit other actor" run_as heisei_report_login <<'SQL'
+SET ROLE heisei_report_writer;
+SET app.user_id = '00000000-0000-4000-8000-000000000001';
+INSERT INTO audit_logs (actor_user_id, target_user_id, action, rule_version, request_id)
+VALUES ('00000000-0000-4000-8000-000000000002', '00000000-0000-4000-8000-000000000003', 'report.create', '003i-g4a', 'g4a-negative');
+SQL
+expect_failure "report audit UPDATE" run_as heisei_report_login <<'SQL'
+SET ROLE heisei_report_writer;
+UPDATE audit_logs SET reason = 'tampered';
+SQL
+expect_failure "report audit DELETE" run_as heisei_report_login <<'SQL'
+SET ROLE heisei_report_writer;
+DELETE FROM audit_logs;
+SQL
+
+run_as heisei_report_login <<'SQL' >/dev/null
+SET ROLE heisei_report_writer;
+SET app.user_id = '00000000-0000-4000-8000-000000000002';
+BEGIN;
+INSERT INTO reports (reporter_user_id, target_type, target_user_id, category, category_version)
+VALUES (current_setting('app.user_id')::uuid, 'user', '00000000-0000-4000-8000-000000000001', 'other', 'category-v1');
+INSERT INTO audit_logs (actor_user_id, target_user_id, action, rule_version, request_id)
+VALUES (current_setting('app.user_id')::uuid, '00000000-0000-4000-8000-000000000001', 'report.create', '003i-g4a', 'g4a-atomic-success');
+COMMIT;
+SQL
+echo "PASS: report INSERT and report.create audit same transaction"
+
+expect_failure "audit failure transaction" run_as heisei_report_login <<'SQL'
+SET ROLE heisei_report_writer;
+SET app.user_id = '00000000-0000-4000-8000-000000000003';
+BEGIN;
+INSERT INTO reports (reporter_user_id, target_type, target_user_id, category, category_version)
+VALUES (current_setting('app.user_id')::uuid, 'user', '00000000-0000-4000-8000-000000000001', 'other', 'category-v1');
+INSERT INTO audit_logs (actor_user_id, target_user_id, action, rule_version, request_id)
+VALUES (current_setting('app.user_id')::uuid, '00000000-0000-4000-8000-000000000001', 'profile.update', '003i-g4a', 'g4a-atomic-failure');
+COMMIT;
+SQL
+rollback_count="$(psql_file -Atqc "SELECT count(*) FROM reports WHERE reporter_user_id = '00000000-0000-4000-8000-000000000003' AND target_user_id = '00000000-0000-4000-8000-000000000001'" )"
+test "$rollback_count" = 0
+echo "PASS: audit failure rolls back report INSERT"
+
+plaintext_columns="$(psql_file -Atqc "SELECT count(*) FROM information_schema.columns WHERE table_schema = 'public' AND table_name = 'reports' AND column_name IN ('description', 'normalized_description')")"
+test "$plaintext_columns" = 0
+echo "PASS: reports has no plaintext description column"
+
+report_memberships="$(psql_file -Atqc "SELECT count(*) FROM pg_auth_members m JOIN pg_roles r ON r.oid = m.member WHERE r.rolname = 'heisei_report_writer'")"
+test "$report_memberships" = 0
+echo "PASS: report writer has no role memberships"
 expect_failure "audit log UPDATE" run_as heisei_audit_login <<'SQL'
 SET ROLE heisei_audit_writer;
 UPDATE audit_logs SET reason = 'tampered';
@@ -251,6 +454,8 @@ SQL
 
 # Reapplying both SQL files must remain successful and idempotent.
 psql_file < "$repo_root/packages/database/drizzle/0000_auth_foundation.sql" >/dev/null
+psql_file < "$repo_root/packages/database/drizzle/roles.sql" >/dev/null
+psql_file < "$repo_root/packages/database/drizzle/0001_report_foundation_g4a.sql" >/dev/null
 psql_file < "$repo_root/packages/database/drizzle/roles.sql" >/dev/null
 echo "PASS: migration first application and reapplication"
 echo "PASS: PostgreSQL RLS integration checks"
