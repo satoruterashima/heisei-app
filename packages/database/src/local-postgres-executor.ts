@@ -15,8 +15,9 @@ const DEFAULT_ROLES = {
   app: 'heisei_app',
   identityWriter: 'heisei_identity_writer',
   profileWriter: 'heisei_profile_writer',
+  blockWriter: 'heisei_block_writer',
 } as const;
-type FixedRoles = { app: string; identityWriter: string; profileWriter: string };
+type FixedRoles = { app: string; identityWriter: string; profileWriter: string; blockWriter: string };
 
 const SAFE_ROLE = /^[a-z_][a-z0-9_]*$/u;
 
@@ -51,6 +52,7 @@ export class LocalTrustedPostgresExecutor implements TrustedPostgresExecutor {
     quoteRole(this.roles.app);
     quoteRole(this.roles.identityWriter);
     quoteRole(this.roles.profileWriter);
+    quoteRole(this.roles.blockWriter);
     if (options.pool) {
       this.pool = options.pool;
       this.ownsPool = options.ownsPool ?? false;
@@ -78,6 +80,13 @@ export class LocalTrustedPostgresExecutor implements TrustedPostgresExecutor {
       throw new Error('invalid user id');
     }
     return this.withTransaction(this.roles.profileWriter, [['app.user_id', userId]], operation);
+  }
+
+  async withBlockWriter<T>(userId: string, operation: (query: PostgresQueryExecutor) => Promise<T>): Promise<T> {
+    if (typeof userId !== 'string' || !/^[0-9a-f]{8}-(?:[0-9a-f]{4}-){3}[0-9a-f]{12}$/iu.test(userId)) {
+      throw new Error('invalid user id');
+    }
+    return this.withTransaction(this.roles.blockWriter, [['app.user_id', userId]], operation);
   }
 
   async close(): Promise<void> {

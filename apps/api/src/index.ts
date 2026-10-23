@@ -2,7 +2,7 @@ import { Hono } from 'hono';
 import { cors } from 'hono/cors';
 import { AccessPolicyService, authMiddleware, authorize, isAccessOperation, optionalAuthMiddleware, type AccessPolicyInput, type AuthMiddlewareOptions, type AuthVariables, getAuth, getOptionalAuth } from '@heisei/auth';
 import type { JwtVerifier } from '@heisei/auth';
-import { DatabaseIdentityLoader, PostgresBlockRelationStore, PostgresIdentityRecordStore, PostgresProfileStore, type ProfileStore, type TrustedPostgresExecutor } from '@heisei/database';
+import { DatabaseIdentityLoader, PostgresBlockMutationStore, PostgresBlockRelationStore, PostgresIdentityRecordStore, PostgresProfileStore, type BlockMutationStore, type ProfileStore, type TrustedPostgresExecutor } from '@heisei/database';
 import { updateProfileSchema } from '@heisei/validation';
 
 export type DatabaseApiOptions = {
@@ -19,6 +19,7 @@ export type ApiOptions = {
   approvePrerequisites?: (actorUserId: string, operation: string) => Promise<boolean>;
   approveScope?: (actorUserId: string, operation: string) => Promise<boolean>;
   profileStore?: ProfileStore;
+  blockStore?: BlockMutationStore;
 };
 
 export function createApiApp(authOrOptions?: AuthMiddlewareOptions | ApiOptions) {
@@ -36,7 +37,7 @@ export function createApiApp(authOrOptions?: AuthMiddlewareOptions | ApiOptions)
 
   const candidate = authOrOptions as (AuthMiddlewareOptions & ApiOptions) | undefined;
   const legacyAuth = candidate && 'verifier' in candidate
-    && !('auth' in candidate || 'accessPolicy' in candidate || 'loadBlockRelation' in candidate || 'approveRelationship' in candidate || 'approvePrerequisites' in candidate || 'approveScope' in candidate || 'profileStore' in candidate);
+    && !('auth' in candidate || 'accessPolicy' in candidate || 'loadBlockRelation' in candidate || 'approveRelationship' in candidate || 'approvePrerequisites' in candidate || 'approveScope' in candidate || 'profileStore' in candidate || 'blockStore' in candidate);
   const options: ApiOptions = legacyAuth
     ? { auth: candidate }
     : (candidate && 'verifier' in candidate
@@ -118,6 +119,49 @@ export function createApiApp(authOrOptions?: AuthMiddlewareOptions | ApiOptions)
     }
   });
 
+  app.use('/api/v1/blocks', authMiddleware(middlewareOptions));
+  app.use('/api/v1/blocks/*', authMiddleware(middlewareOptions));
+  app.post('/api/v1/blocks', async (c) => {
+    const { identity, claims } = getAuth(c);
+    const requestId = crypto.randomUUID();
+    const decision = authorize({ context: { identity, claims }, request: { minimumAuthLevel: 2 } });
+    if (!decision.allowed) return c.json({ error: { code: 'forbidden', message: 'Block operation is not allowed' }, requestId }, 403, { 'Cache-Control': 'no-store', 'X-Request-ID': requestId });
+    if (!options.blockStore) return c.json({ error: { code: 'service_unavailable', message: 'Block storage is not configured' }, requestId }, 503);
+    if (c.req.header('content-type')?.trim().toLowerCase() !== 'application/json') {
+      return c.json({ error: { code: 'invalid_request', message: 'JSON Content-Type required' }, requestId }, 415, { 'Cache-Control': 'no-store', 'X-Request-ID': requestId });
+    }
+    let body: unknown;
+    try {
+      body = await readLimitedJson(c.req.raw, 8192);
+    } catch (error) {
+      const status = error instanceof RequestTooLarge ? 413 : 400;
+      return c.json({ error: { code: 'invalid_request', message: status === 413 ? 'Block request too large' : 'Valid JSON body is required' }, requestId }, status, { 'Cache-Control': 'no-store', 'X-Request-ID': requestId });
+    }
+    if (!isStrictBlockBody(body) || body.targetUserId === identity.userId) return c.json({ error: { code: 'validation_failed', message: 'Block target is invalid' }, requestId }, 422, { 'Cache-Control': 'no-store', 'X-Request-ID': requestId });
+    try {
+      await options.blockStore.blockOwn(identity.userId, body.targetUserId, requestId);
+      return c.json({ data: { accepted: true }, requestId }, 202, { 'Cache-Control': 'no-store', 'X-Request-ID': requestId });
+    } catch {
+      return c.json({ error: { code: 'internal_error', message: 'Block operation failed' }, requestId }, 500, { 'Cache-Control': 'no-store', 'X-Request-ID': requestId });
+    }
+  });
+
+  app.delete('/api/v1/blocks/:id', async (c) => {
+    const { identity, claims } = getAuth(c);
+    const requestId = crypto.randomUUID();
+    const decision = authorize({ context: { identity, claims }, request: { minimumAuthLevel: 2 } });
+    if (!decision.allowed) return c.json({ error: { code: 'forbidden', message: 'Block operation is not allowed' }, requestId }, 403, { 'Cache-Control': 'no-store', 'X-Request-ID': requestId });
+    if (!options.blockStore) return c.json({ error: { code: 'service_unavailable', message: 'Block storage is not configured' }, requestId }, 503);
+    const blockId = c.req.param('id');
+    if (!isUuid(blockId)) return c.json({ error: { code: 'invalid_request', message: 'Block id is invalid' }, requestId }, 400, { 'Cache-Control': 'no-store', 'X-Request-ID': requestId });
+    try {
+      await options.blockStore.unblockOwn(identity.userId, blockId, requestId);
+      return c.json({ data: { accepted: true }, requestId }, 202, { 'Cache-Control': 'no-store', 'X-Request-ID': requestId });
+    } catch {
+      return c.json({ error: { code: 'internal_error', message: 'Block operation failed' }, requestId }, 500, { 'Cache-Control': 'no-store', 'X-Request-ID': requestId });
+    }
+  });
+
   const policy = options.accessPolicy ?? new AccessPolicyService();
   app.use('/api/v1/access', optionalAuthMiddleware(middlewareOptions));
   app.get('/api/v1/access', async (c) => {
@@ -163,10 +207,12 @@ export function createApiAppWithDatabase(options: DatabaseApiOptions) {
     auth: { verifier: options.verifier, identityLoader },
     loadBlockRelation: (actor, target) => blockStore.findBetween(actor, target),
     profileStore: new PostgresProfileStore(options.executor),
+    blockStore: new PostgresBlockMutationStore(options.executor),
   });
 }
 
 class ProfileRequestTooLarge extends Error {}
+class RequestTooLarge extends Error {}
 
 async function readLimitedProfileJson(request: Request, maximumBytes: number): Promise<unknown> {
   const declared = request.headers.get('content-length');
@@ -192,6 +238,42 @@ async function readLimitedProfileJson(request: Request, maximumBytes: number): P
     offset += part.byteLength;
   }
   return JSON.parse(new TextDecoder('utf-8', { fatal: true }).decode(buffer)) as unknown;
+}
+
+async function readLimitedJson(request: Request, maximumBytes: number): Promise<unknown> {
+  const declared = request.headers.get('content-length');
+  if (declared !== null && Number(declared) > maximumBytes) throw new RequestTooLarge();
+  if (!request.body) throw new Error('Missing request body');
+  const reader = request.body.getReader();
+  const parts: Uint8Array[] = [];
+  let bytes = 0;
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    bytes += value.byteLength;
+    if (bytes > maximumBytes) {
+      await reader.cancel();
+      throw new RequestTooLarge();
+    }
+    parts.push(value);
+  }
+  const buffer = new Uint8Array(bytes);
+  let offset = 0;
+  for (const part of parts) {
+    buffer.set(part, offset);
+    offset += part.byteLength;
+  }
+  return JSON.parse(new TextDecoder('utf-8', { fatal: true }).decode(buffer)) as unknown;
+}
+
+function isUuid(value: string): boolean {
+  return /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/iu.test(value);
+}
+
+function isStrictBlockBody(value: unknown): value is { targetUserId: string } {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return false;
+  const record = value as Record<string, unknown>;
+  return Object.keys(record).length === 1 && typeof record.targetUserId === 'string' && isUuid(record.targetUserId);
 }
 
 function safeProfile(profile: { userId: string; username: string; displayName: string; bio: string | null; favoriteGenres: string | null; avatarUrl: string | null; updatedAt: string }) {

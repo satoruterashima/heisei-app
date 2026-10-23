@@ -18,6 +18,12 @@ export interface TrustedPostgresExecutor {
   withUserId<T>(userId: string, operation: (query: PostgresQueryExecutor) => Promise<T>): Promise<T>;
   /** Optional until every approved executor supports the atomic profile writer role. */
   withProfileWriter?<T>(userId: string, operation: (query: PostgresQueryExecutor) => Promise<T>): Promise<T>;
+  withBlockWriter?<T>(userId: string, operation: (query: PostgresQueryExecutor) => Promise<T>): Promise<T>;
+}
+
+export interface BlockMutationStore {
+  blockOwn(actorUserId: string, targetUserId: string, requestId: string): Promise<void>;
+  unblockOwn(actorUserId: string, blockId: string, requestId: string): Promise<void>;
 }
 
 export type ProfileRecord = {
@@ -106,8 +112,70 @@ const profileAuditSql = `
   VALUES ($1::uuid, $1::uuid, 'profile.update', $3, $2, '003g')
 `;
 
+const blockInsertSql = `
+  INSERT INTO blocks (blocker_id, blocked_id)
+  VALUES ($1::uuid, $2::uuid)
+  ON CONFLICT (blocker_id, blocked_id) DO NOTHING
+  RETURNING id::text AS block_id, blocked_id::text AS target_user_id
+`;
+
+const blockDeleteSql = `
+  DELETE FROM blocks
+  WHERE id = $1::uuid
+  RETURNING blocked_id::text AS target_user_id
+`;
+
+const blockAuditSql = `
+  INSERT INTO audit_logs (actor_user_id, target_user_id, action, reason, request_id, rule_version)
+  VALUES ($1::uuid, $2::uuid, $3, NULL, $4, '003h')
+`;
+
 function isUuid(value: string): boolean {
   return /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(value);
+}
+
+/** Only a missing target reference is masked; unrelated FK/audit errors remain failures. */
+function isUnknownBlockTarget(error: unknown): boolean {
+  if (typeof error !== 'object' || error === null) return false;
+  const pg = error as { code?: unknown; constraint?: unknown };
+  return pg.code === '23503' && pg.constraint === 'blocks_blocked_id_fkey';
+}
+
+/** Block mutations and their append-only audit event share one RLS-scoped transaction. */
+export class PostgresBlockMutationStore implements BlockMutationStore {
+  constructor(private readonly executor: TrustedPostgresExecutor) {}
+
+  async blockOwn(actorUserId: string, targetUserId: string, requestId: string): Promise<void> {
+    if (!isUuid(actorUserId) || !isUuid(targetUserId) || actorUserId === targetUserId || !requestId || requestId.length > 128) {
+      throw new Error('invalid block mutation');
+    }
+    if (!this.executor.withBlockWriter) throw new Error('block writer is unavailable');
+    try {
+      return await this.executor.withBlockWriter(actorUserId, async (query) => {
+        const inserted = await query.query<{ block_id: string; target_user_id: string }>(blockInsertSql, [actorUserId, targetUserId]);
+        const row = inserted.rows[0];
+        if (!row) return;
+        if (typeof row.block_id !== 'string' || row.target_user_id !== targetUserId) throw new Error('invalid block row');
+        await query.query(blockAuditSql, [actorUserId, targetUserId, 'block.create', requestId]);
+      });
+    } catch (error) {
+      // A missing target is intentionally indistinguishable from an accepted
+      // block request. The transaction has already rolled back on FK failure.
+      if (isUnknownBlockTarget(error)) return;
+      throw error;
+    }
+  }
+
+  async unblockOwn(actorUserId: string, blockId: string, requestId: string): Promise<void> {
+    if (!isUuid(actorUserId) || !isUuid(blockId) || !requestId || requestId.length > 128) throw new Error('invalid block mutation');
+    if (!this.executor.withBlockWriter) throw new Error('block writer is unavailable');
+    return this.executor.withBlockWriter(actorUserId, async (query) => {
+      const deleted = await query.query<{ target_user_id: string }>(blockDeleteSql, [blockId]);
+      const row = deleted.rows[0];
+      if (!row || typeof row.target_user_id !== 'string') return;
+      await query.query(blockAuditSql, [actorUserId, row.target_user_id, 'block.delete', requestId]);
+    });
+  }
 }
 
 function profileFromRow(row: Record<string, unknown>): ProfileRecord | null {
