@@ -35,7 +35,7 @@ REVOKE ALL ON profiles, user_verifications, user_settings, blocks, audit_logs FR
 GRANT SELECT ON profiles, user_verifications, user_settings, blocks TO heisei_app;
 GRANT UPDATE (display_name, bio, favorite_genres, avatar_url, updated_at) ON profiles TO heisei_app;
 GRANT INSERT, UPDATE, DELETE ON user_settings TO heisei_app;
-GRANT INSERT, DELETE ON blocks TO heisei_app;
+REVOKE INSERT, UPDATE, DELETE ON blocks FROM heisei_app;
 
 REVOKE ALL ON profiles, user_verifications, user_settings, blocks, audit_logs FROM heisei_staff;
 GRANT SELECT ON profiles, user_verifications, audit_logs TO heisei_staff;

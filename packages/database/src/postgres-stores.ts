@@ -21,12 +21,19 @@ export interface TrustedPostgresExecutor {
   withBlockWriter?<T>(userId: string, operation: (query: PostgresQueryExecutor) => Promise<T>): Promise<T>;
 }
 
-export type BlockWriteResult = { blockId: string; targetUserId: string; alreadyBlocked: boolean };
+export type BlockWriteResult = { blockId: string };
 
 export class BlockTargetUnavailableError extends Error {
   constructor() {
     super('block target is unavailable');
     this.name = 'BlockTargetUnavailableError';
+  }
+}
+
+export class BlockNotFoundError extends Error {
+  constructor() {
+    super('block not found');
+    this.name = 'BlockNotFoundError';
   }
 }
 
@@ -122,10 +129,16 @@ const profileAuditSql = `
 `;
 
 const blockInsertSql = `
-  INSERT INTO blocks (blocker_id, blocked_id)
-  VALUES ($1::uuid, $2::uuid)
+  INSERT INTO blocks (id, blocker_id, blocked_id)
+  VALUES ($3::uuid, $1::uuid, $2::uuid)
   ON CONFLICT (blocker_id, blocked_id) DO NOTHING
   RETURNING id::text AS block_id, blocked_id::text AS target_user_id
+`;
+
+const blockExistingSql = `
+  SELECT id::text AS block_id
+  FROM blocks
+  WHERE blocker_id = $1::uuid AND blocked_id = $2::uuid
 `;
 
 const blockDeleteSql = `
@@ -147,6 +160,15 @@ function isDatabaseConstraintError(error: unknown, code: string): boolean {
   return typeof error === 'object' && error !== null && 'code' in error && (error as { code?: unknown }).code === code;
 }
 
+async function deterministicBlockId(actorUserId: string, targetUserId: string): Promise<string> {
+  const digest = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(`${actorUserId}:${targetUserId}`));
+  const bytes = new Uint8Array(digest).slice(0, 16);
+  bytes[6] = (bytes[6] & 0x0f) | 0x50;
+  bytes[8] = (bytes[8] & 0x3f) | 0x80;
+  const hex = [...bytes].map((value) => value.toString(16).padStart(2, '0')).join('');
+  return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`;
+}
+
 /** Block mutations and their append-only audit event share one RLS-scoped transaction. */
 export class PostgresBlockMutationStore implements BlockMutationStore {
   constructor(private readonly executor: TrustedPostgresExecutor) {}
@@ -156,17 +178,23 @@ export class PostgresBlockMutationStore implements BlockMutationStore {
       throw new Error('invalid block mutation');
     }
     if (!this.executor.withBlockWriter) throw new Error('block writer is unavailable');
+    const opaqueBlockId = await deterministicBlockId(actorUserId, targetUserId);
     try {
       return await this.executor.withBlockWriter(actorUserId, async (query) => {
-        const inserted = await query.query<{ block_id: string; target_user_id: string }>(blockInsertSql, [actorUserId, targetUserId]);
+        const inserted = await query.query<{ block_id: string; target_user_id: string }>(blockInsertSql, [actorUserId, targetUserId, opaqueBlockId]);
         const row = inserted.rows[0];
-        if (!row) return { blockId: '', targetUserId, alreadyBlocked: true };
+        if (!row) {
+          const existing = await query.query<{ block_id: string }>(blockExistingSql, [actorUserId, targetUserId]);
+          return { blockId: existing.rows[0]?.block_id ?? opaqueBlockId };
+        }
         if (typeof row.block_id !== 'string' || row.target_user_id !== targetUserId) throw new Error('invalid block row');
         await query.query(blockAuditSql, [actorUserId, targetUserId, 'block.create', requestId]);
-        return { blockId: row.block_id, targetUserId, alreadyBlocked: false };
+        return { blockId: row.block_id };
       });
     } catch (error) {
-      if (isDatabaseConstraintError(error, '23503')) throw new BlockTargetUnavailableError();
+      // A missing target is intentionally indistinguishable from an accepted
+      // block request. The transaction has already rolled back on FK failure.
+      if (isDatabaseConstraintError(error, '23503')) return { blockId: opaqueBlockId };
       throw error;
     }
   }
@@ -177,7 +205,7 @@ export class PostgresBlockMutationStore implements BlockMutationStore {
     return this.executor.withBlockWriter(actorUserId, async (query) => {
       const deleted = await query.query<{ target_user_id: string }>(blockDeleteSql, [blockId]);
       const row = deleted.rows[0];
-      if (!row || typeof row.target_user_id !== 'string') throw new Error('block not found');
+      if (!row || typeof row.target_user_id !== 'string') throw new BlockNotFoundError();
       await query.query(blockAuditSql, [actorUserId, row.target_user_id, 'block.delete', requestId]);
       return { targetUserId: row.target_user_id };
     });

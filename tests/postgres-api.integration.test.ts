@@ -141,8 +141,16 @@ describe.skipIf(!container || !databaseUrl)('real JWT → Hono → isolated Post
       method: 'POST', headers: { authorization: `Bearer ${token}`, 'content-type': 'application/json' },
       body: JSON.stringify({ targetUserId: targetId }),
     });
-    expect(repeat.status).toBe(200);
-    expect((await repeat.json()).data.block.alreadyBlocked).toBe(true);
+    expect(repeat.status).toBe(202);
+    const repeatBody = await repeat.json();
+    expect(repeatBody.data.block.id).toMatch(/^[0-9a-f-]{36}$/i);
+    const unknown = await app.request('/api/v1/blocks', {
+      method: 'POST', headers: { authorization: `Bearer ${token}`, 'content-type': 'application/json' },
+      body: JSON.stringify({ targetUserId: '00000000-0000-4000-8000-000000000003' }),
+    });
+    expect(unknown.status).toBe(202);
+    const unknownBody = await unknown.json();
+    expect(Object.keys(unknownBody.data.block)).toEqual(Object.keys(repeatBody.data.block));
     const removed = await app.request(`/api/v1/blocks/${existing}`, {
       method: 'DELETE', headers: { authorization: `Bearer ${token}` },
     });
@@ -153,8 +161,8 @@ describe.skipIf(!container || !databaseUrl)('real JWT → Hono → isolated Post
       method: 'POST', headers: { authorization: `Bearer ${token}`, 'content-type': 'application/json' },
       body: JSON.stringify({ targetUserId: targetId }),
     });
-    expect(recreated.status).toBe(201);
-    expect((await recreated.json()).data.block.targetUserId).toBe(targetId);
+    expect(recreated.status).toBe(202);
+    expect((await recreated.json()).data.block.id).toMatch(/^[0-9a-f-]{36}$/i);
     expect(adminSql(`SELECT count(*)::text FROM audit_logs WHERE actor_user_id = '${userId}'::uuid AND target_user_id = '${targetId}'::uuid AND action = 'block.create'`)).toBe('1');
   });
 
@@ -184,9 +192,48 @@ describe.skipIf(!container || !databaseUrl)('real JWT → Hono → isolated Post
       body: JSON.stringify({ targetUserId: targetId }),
     });
     const responses = await Promise.all([request(), request()]);
-    expect(responses.map((response) => response.status).sort()).toEqual([200, 201]);
+    expect(responses.map((response) => response.status)).toEqual([202, 202]);
     expect(adminSql(`SELECT count(*)::text FROM blocks WHERE blocker_id = '${userId}'::uuid AND blocked_id = '${targetId}'::uuid`)).toBe('1');
     expect(adminSql(`SELECT count(*)::text FROM audit_logs WHERE actor_user_id = '${userId}'::uuid AND target_user_id = '${targetId}'::uuid AND action = 'block.create'`)).toBe('1');
+  });
+
+  it('cannot bypass block auditing with the general app role or misuse the audit role', async () => {
+    const block = adminSql(`SELECT id::text FROM blocks WHERE blocker_id = '${userId}'::uuid AND blocked_id = '${targetId}'::uuid`);
+    await expect(executor.withUserId(userId, (query) => query.query(
+      'INSERT INTO blocks (blocker_id, blocked_id) VALUES ($1::uuid, $2::uuid)', [userId, targetId],
+    ))).rejects.toThrow();
+    await expect(executor.withUserId(userId, (query) => query.query(
+      'DELETE FROM blocks WHERE id = $1::uuid', [block],
+    ))).rejects.toThrow();
+    await expect(executor.withBlockWriter!(userId, (query) => query.query(
+      "INSERT INTO audit_logs (actor_user_id, target_user_id, action, request_id, rule_version) VALUES ($1::uuid, $2::uuid, 'profile.update', 'bad-audit', '003h')",
+      [userId, targetId],
+    ))).rejects.toThrow();
+    await expect(executor.withBlockWriter!(userId, (query) => query.query(
+      "INSERT INTO audit_logs (actor_user_id, target_user_id, action, request_id, rule_version) VALUES ($1::uuid, $2::uuid, 'block.create', 'bad-owner', '003h')",
+      [targetId, targetId],
+    ))).rejects.toThrow();
+    expect(adminSql(`SELECT count(*)::text FROM blocks WHERE id = '${block}'::uuid`)).toBe('1');
+  });
+
+  it('returns a safe 500 for delete database failures and rolls back delete audits', async () => {
+    const block = adminSql(`SELECT id::text FROM blocks WHERE blocker_id = '${userId}'::uuid AND blocked_id = '${targetId}'::uuid`);
+    const failingExecutor: TrustedPostgresExecutor = {
+      withAuthSubject: executor.withAuthSubject.bind(executor),
+      withUserId: executor.withUserId.bind(executor),
+      withBlockWriter: (id, operation) => executor.withBlockWriter!(id, async (query) => operation({
+        query: async (text, values) => {
+          if (text.includes('INSERT INTO audit_logs')) throw new Error('audit unavailable');
+          return query.query(text, values);
+        },
+      })),
+    };
+    const { verifier, token } = await signedToken();
+    const app = createApiAppWithDatabase({ verifier, executor: failingExecutor });
+    const response = await app.request(`/api/v1/blocks/${block}`, { method: 'DELETE', headers: { authorization: `Bearer ${token}` } });
+    expect(response.status).toBe(500);
+    expect(JSON.stringify(await response.json())).not.toContain('audit unavailable');
+    expect(adminSql(`SELECT count(*)::text FROM blocks WHERE id = '${block}'::uuid`)).toBe('1');
   });
 
   it('rolls back block insertion when the atomic audit write fails', async () => {

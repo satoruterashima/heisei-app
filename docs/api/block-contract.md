@@ -10,8 +10,11 @@ cannot provide an actor ID, role, level, or account status.
 
 The request must use exactly `Content-Type: application/json`, be no larger than
 8 KiB, and contain only `{ "targetUserId": "<uuid>" }`. Self-blocking is
-rejected. A new block returns `201`; repeating the same block is idempotent and
-returns `200` with `alreadyBlocked: true`.
+rejected. Every syntactically valid request returns the same `202` acceptance
+envelope with an opaque block UUID. New, repeated, and unknown target UUIDs do
+not produce different status codes or fields. The opaque UUID is deterministic
+for the actor/target pair, so an owner can use it for the delete operation
+without an existence lookup.
 
 ## Remove
 

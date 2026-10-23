@@ -172,13 +172,7 @@ CREATE POLICY blocks_participant_select ON blocks FOR SELECT
       AND (blocker_id::text = current_setting('app.user_id', true)
         OR blocked_id::text = current_setting('app.user_id', true)));
 DROP POLICY IF EXISTS blocks_owner_insert ON blocks;
-CREATE POLICY blocks_owner_insert ON blocks FOR INSERT
-  WITH CHECK (current_user = 'heisei_app'
-      AND blocker_id::text = current_setting('app.user_id', true));
 DROP POLICY IF EXISTS blocks_owner_delete ON blocks;
-CREATE POLICY blocks_owner_delete ON blocks FOR DELETE
-  USING (current_user = 'heisei_app'
-      AND blocker_id::text = current_setting('app.user_id', true));
 DROP POLICY IF EXISTS blocks_block_writer_select ON blocks;
 CREATE POLICY blocks_block_writer_select ON blocks FOR SELECT
   USING (current_user = 'heisei_block_writer'
@@ -206,7 +200,11 @@ CREATE POLICY audit_logs_trusted_insert ON audit_logs FOR INSERT
 DROP POLICY IF EXISTS audit_logs_block_writer_insert ON audit_logs;
 CREATE POLICY audit_logs_block_writer_insert ON audit_logs FOR INSERT
   WITH CHECK (current_user = 'heisei_block_writer'
-      AND actor_user_id::text = current_setting('app.user_id', true));
+      AND actor_user_id::text = current_setting('app.user_id', true)
+      AND action IN ('block.create', 'block.delete')
+      AND rule_version = '003h'
+      AND request_id IS NOT NULL
+      AND length(request_id) BETWEEN 1 AND 128);
 DROP POLICY IF EXISTS audit_logs_profile_writer_insert ON audit_logs;
 CREATE POLICY audit_logs_profile_writer_insert ON audit_logs FOR INSERT
   WITH CHECK (current_user = 'heisei_profile_writer'
