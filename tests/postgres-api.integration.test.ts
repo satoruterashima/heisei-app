@@ -205,6 +205,64 @@ describe.skipIf(!container || !databaseUrl)('real JWT → Hono → isolated Post
     expect(adminSql(`SELECT count(*)::text FROM audit_logs WHERE actor_user_id = '${userId}'::uuid AND target_user_id = '${targetId}'::uuid AND action = 'block.create'`)).toBe('1');
   });
 
+  it('unblocks by target without an existence oracle, including legacy random IDs', async () => {
+    adminSql(`DELETE FROM blocks WHERE blocker_id = '${userId}'::uuid AND blocked_id = '${targetId}'::uuid`);
+    adminSql(`DELETE FROM audit_logs WHERE actor_user_id = '${userId}'::uuid AND target_user_id = '${targetId}'::uuid AND action = 'block.delete'`);
+    adminSql(`INSERT INTO blocks (id, blocker_id, blocked_id) VALUES ('00000000-0000-4000-8000-000000000099'::uuid, '${userId}'::uuid, '${targetId}'::uuid)`);
+    const { verifier, token } = await signedToken();
+    const app = createApiAppWithDatabase({ verifier, executor });
+    const accepted = await app.request(`/api/v1/blocks/by-target/${targetId}`, { method: 'DELETE', headers: { authorization: `Bearer ${token}` } });
+    expect(accepted.status).toBe(202);
+    expect((await accepted.json()).data).toEqual({ accepted: true });
+    expect(adminSql(`SELECT count(*)::text FROM blocks WHERE id = '00000000-0000-4000-8000-000000000099'::uuid`)).toBe('0');
+    expect(adminSql(`SELECT count(*)::text FROM audit_logs WHERE actor_user_id = '${userId}'::uuid AND target_user_id = '${targetId}'::uuid AND action = 'block.delete'`)).toBe('1');
+
+    const unknown = await app.request('/api/v1/blocks/by-target/00000000-0000-4000-8000-000000000003', { method: 'DELETE', headers: { authorization: `Bearer ${token}` } });
+    const knownUnblocked = await app.request(`/api/v1/blocks/by-target/${targetId}`, { method: 'DELETE', headers: { authorization: `Bearer ${token}` } });
+    expect(unknown.status).toBe(202);
+    expect(knownUnblocked.status).toBe(202);
+    expect((await unknown.json()).data).toEqual((await knownUnblocked.json()).data);
+    expect(adminSql(`SELECT count(*)::text FROM audit_logs WHERE actor_user_id = '${userId}'::uuid AND target_user_id = '${targetId}'::uuid AND action = 'block.delete'`)).toBe('1');
+    expect(adminSql(`SELECT count(*)::text FROM blocks WHERE blocker_id = '${targetId}'::uuid AND blocked_id = '${userId}'::uuid`)).toBe('1');
+  });
+
+  it('keeps target-unblock atomic under concurrency and audit failure', async () => {
+    adminSql(`DELETE FROM blocks WHERE blocker_id = '${userId}'::uuid AND blocked_id = '${targetId}'::uuid`);
+    adminSql(`DELETE FROM audit_logs WHERE actor_user_id = '${userId}'::uuid AND target_user_id = '${targetId}'::uuid AND action = 'block.delete'`);
+    const { verifier, token } = await signedToken();
+    const app = createApiAppWithDatabase({ verifier, executor });
+    const create = await app.request('/api/v1/blocks', {
+      method: 'POST', headers: { authorization: `Bearer ${token}`, 'content-type': 'application/json' },
+      body: JSON.stringify({ targetUserId: targetId }),
+    });
+    expect(create.status).toBe(202);
+    const remove = () => app.request(`/api/v1/blocks/by-target/${targetId}`, { method: 'DELETE', headers: { authorization: `Bearer ${token}` } });
+    expect((await Promise.all([remove(), remove()])).map((response) => response.status)).toEqual([202, 202]);
+    expect(adminSql(`SELECT count(*)::text FROM blocks WHERE blocker_id = '${userId}'::uuid AND blocked_id = '${targetId}'::uuid`)).toBe('0');
+    expect(adminSql(`SELECT count(*)::text FROM audit_logs WHERE actor_user_id = '${userId}'::uuid AND target_user_id = '${targetId}'::uuid AND action = 'block.delete'`)).toBe('1');
+
+    const recreate = await app.request('/api/v1/blocks', {
+      method: 'POST', headers: { authorization: `Bearer ${token}`, 'content-type': 'application/json' },
+      body: JSON.stringify({ targetUserId: targetId }),
+    });
+    expect(recreate.status).toBe(202);
+    const failingExecutor: TrustedPostgresExecutor = {
+      withAuthSubject: executor.withAuthSubject.bind(executor),
+      withUserId: executor.withUserId.bind(executor),
+      withBlockWriter: (id, operation) => executor.withBlockWriter!(id, async (query) => operation({
+        query: async (text, values) => {
+          if (text.includes('INSERT INTO audit_logs')) throw new Error('audit unavailable');
+          return query.query(text, values);
+        },
+      })),
+    };
+    const failingApp = createApiAppWithDatabase({ verifier, executor: failingExecutor });
+    const failed = await failingApp.request(`/api/v1/blocks/by-target/${targetId}`, { method: 'DELETE', headers: { authorization: `Bearer ${token}` } });
+    expect(failed.status).toBe(500);
+    expect(JSON.stringify(await failed.json())).not.toContain('audit unavailable');
+    expect(adminSql(`SELECT count(*)::text FROM blocks WHERE blocker_id = '${userId}'::uuid AND blocked_id = '${targetId}'::uuid`)).toBe('1');
+  });
+
   it('cannot bypass block auditing with the general app role or misuse the audit role', async () => {
     const block = adminSql(`SELECT id::text FROM blocks WHERE blocker_id = '${userId}'::uuid AND blocked_id = '${targetId}'::uuid`);
     await expect(executor.withUserId(userId, (query) => query.query(

@@ -24,6 +24,7 @@ export interface TrustedPostgresExecutor {
 export interface BlockMutationStore {
   blockOwn(actorUserId: string, targetUserId: string, requestId: string): Promise<void>;
   unblockOwn(actorUserId: string, blockId: string, requestId: string): Promise<void>;
+  unblockTargetOwn(actorUserId: string, targetUserId: string, requestId: string): Promise<void>;
 }
 
 export type ProfileRecord = {
@@ -125,6 +126,12 @@ const blockDeleteSql = `
   RETURNING blocked_id::text AS target_user_id
 `;
 
+const blockDeleteByTargetSql = `
+  DELETE FROM blocks
+  WHERE blocker_id = $1::uuid AND blocked_id = $2::uuid
+  RETURNING blocked_id::text AS target_user_id
+`;
+
 const blockAuditSql = `
   INSERT INTO audit_logs (actor_user_id, target_user_id, action, reason, request_id, rule_version)
   VALUES ($1::uuid, $2::uuid, $3, NULL, $4, '003h')
@@ -174,6 +181,19 @@ export class PostgresBlockMutationStore implements BlockMutationStore {
       const row = deleted.rows[0];
       if (!row || typeof row.target_user_id !== 'string') return;
       await query.query(blockAuditSql, [actorUserId, row.target_user_id, 'block.delete', requestId]);
+    });
+  }
+
+  async unblockTargetOwn(actorUserId: string, targetUserId: string, requestId: string): Promise<void> {
+    if (!isUuid(actorUserId) || !isUuid(targetUserId) || !requestId || requestId.length > 128) throw new Error('invalid block mutation');
+    if (!this.executor.withBlockWriter) throw new Error('block writer is unavailable');
+    return this.executor.withBlockWriter(actorUserId, async (query) => {
+      const deleted = await query.query<{ target_user_id: string }>(blockDeleteByTargetSql, [actorUserId, targetUserId]);
+      if (deleted.rows.length > 1) throw new Error('unexpected block row count');
+      const row = deleted.rows[0];
+      if (!row) return;
+      if (row.target_user_id.toLowerCase() !== targetUserId.toLowerCase()) throw new Error('inconsistent block target');
+      await query.query(blockAuditSql, [actorUserId, targetUserId, 'block.delete', requestId]);
     });
   }
 }
