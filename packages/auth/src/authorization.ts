@@ -7,6 +7,7 @@ export type AuthorizationReason =
   | 'membership_required'
   | 'role_required'
   | 'account_not_active'
+  | 'relationship_unavailable'
   | 'blocked';
 
 export type AuthorizationRequest = {
@@ -57,6 +58,11 @@ export function authorize(input: AuthorizationInput): AuthorizationDecision {
   }
 
   if (request.targetUserId) {
+    // Never infer that a missing server-side block relation means no block exists.
+    if (!input.blockedUserIds || !input.blockedByUserIds) {
+      return { allowed: false, reason: 'relationship_unavailable' };
+    }
+
     const actorBlockedTarget = input.blockedUserIds?.has(request.targetUserId) ?? false;
     const targetBlockedActor = input.blockedByUserIds?.has(request.targetUserId) ?? false;
     if (actorBlockedTarget || targetBlockedActor) {

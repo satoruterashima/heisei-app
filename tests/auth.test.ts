@@ -52,12 +52,30 @@ describe('authorization', () => {
     expect(result).toEqual({ allowed: false, reason: 'account_not_active' });
   });
 
+  it('fails closed if either block relation was not loaded', () => {
+    expect(
+      authorize({
+        context: { claims, identity },
+        request: { targetUserId: 'user-2' },
+        blockedUserIds: new Set(),
+      }),
+    ).toEqual({ allowed: false, reason: 'relationship_unavailable' });
+    expect(
+      authorize({
+        context: { claims, identity },
+        request: { targetUserId: 'user-2' },
+        blockedByUserIds: new Set(),
+      }),
+    ).toEqual({ allowed: false, reason: 'relationship_unavailable' });
+  });
+
   it('rejects interactions when either side has blocked the other', () => {
     expect(
       authorize({
         context: { claims, identity },
         request: { targetUserId: 'user-2' },
         blockedUserIds: new Set(['user-2']),
+        blockedByUserIds: new Set(),
       }),
     ).toEqual({ allowed: false, reason: 'blocked' });
 
@@ -65,6 +83,7 @@ describe('authorization', () => {
       authorize({
         context: { claims, identity },
         request: { targetUserId: 'user-2' },
+        blockedUserIds: new Set(),
         blockedByUserIds: new Set(['user-2']),
       }),
     ).toEqual({ allowed: false, reason: 'blocked' });
