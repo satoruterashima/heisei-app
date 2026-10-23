@@ -10,3 +10,10 @@ export const createPostSchema = z.object({
 });
 
 export type CreatePostInput = z.infer<typeof createPostSchema>;
+
+export const updateProfileSchema = z.object({
+  displayName: z.string().trim().min(1).max(50).optional(),
+  bio: z.string().max(1000).nullable().optional(),
+}).strict().refine((value) => Object.keys(value).length > 0, '更新項目が必要です');
+
+export type UpdateProfileInput = z.infer<typeof updateProfileSchema>;

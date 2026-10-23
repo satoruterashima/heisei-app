@@ -16,6 +16,28 @@ export interface PostgresQueryExecutor {
 export interface TrustedPostgresExecutor {
   withAuthSubject<T>(subject: string, operation: (query: PostgresQueryExecutor) => Promise<T>): Promise<T>;
   withUserId<T>(userId: string, operation: (query: PostgresQueryExecutor) => Promise<T>): Promise<T>;
+  /** Optional until every approved executor supports the atomic profile writer role. */
+  withProfileWriter?<T>(userId: string, operation: (query: PostgresQueryExecutor) => Promise<T>): Promise<T>;
+}
+
+export type ProfileRecord = {
+  userId: string;
+  username: string;
+  displayName: string;
+  bio: string | null;
+  favoriteGenres: string | null;
+  avatarUrl: string | null;
+  updatedAt: string;
+};
+
+export type ProfileUpdate = {
+  displayName?: string;
+  bio?: string | null;
+};
+
+export interface ProfileStore {
+  findOwn(userId: string): Promise<ProfileRecord | null>;
+  updateOwn(userId: string, update: ProfileUpdate, requestId: string): Promise<ProfileRecord>;
 }
 
 type IdentityRow = {
@@ -62,8 +84,88 @@ const blockSql = `
     ) AS blocked_by_target
 `;
 
+const profileSelectSql = `
+  SELECT id::text AS user_id, username, display_name, bio, favorite_genres, avatar_url,
+         updated_at::text AS updated_at
+  FROM profiles
+  WHERE id = $1::uuid
+`;
+
+const profileUpdateSql = `
+  UPDATE profiles
+  SET display_name = COALESCE($1, display_name),
+      bio = CASE WHEN $2::boolean THEN $3::text ELSE bio END,
+      updated_at = now()
+  WHERE id = $4::uuid
+  RETURNING id::text AS user_id, username, display_name, bio, favorite_genres, avatar_url,
+            updated_at::text AS updated_at
+`;
+
+const profileAuditSql = `
+  INSERT INTO audit_logs (actor_user_id, target_user_id, action, reason, request_id, rule_version)
+  VALUES ($1::uuid, $1::uuid, 'profile.update', $3, $2, '003g')
+`;
+
 function isUuid(value: string): boolean {
   return /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(value);
+}
+
+function profileFromRow(row: Record<string, unknown>): ProfileRecord | null {
+  if (
+    typeof row.user_id !== 'string' || typeof row.username !== 'string' ||
+    typeof row.display_name !== 'string' ||
+    (row.bio !== null && typeof row.bio !== 'string') ||
+    (row.favorite_genres !== null && typeof row.favorite_genres !== 'string') ||
+    (row.avatar_url !== null && typeof row.avatar_url !== 'string') ||
+    typeof row.updated_at !== 'string'
+  ) return null;
+  return {
+    userId: row.user_id,
+    username: row.username,
+    displayName: row.display_name,
+    bio: row.bio as string | null,
+    favoriteGenres: row.favorite_genres as string | null,
+    avatarUrl: row.avatar_url as string | null,
+    updatedAt: row.updated_at,
+  };
+}
+
+/** Own-profile access through the RLS-scoped app role and atomic profile writer role. */
+export class PostgresProfileStore implements ProfileStore {
+  constructor(private readonly executor: TrustedPostgresExecutor) {}
+
+  async findOwn(userId: string): Promise<ProfileRecord | null> {
+    if (!isUuid(userId)) return null;
+    return this.executor.withUserId(userId, async (query) => {
+      const result = await query.query(profileSelectSql, [userId]);
+      const row = result.rows.length === 1 ? result.rows[0] : undefined;
+      const profile = row ? profileFromRow(row) : null;
+      return profile?.userId === userId ? profile : null;
+    });
+  }
+
+  async updateOwn(userId: string, update: ProfileUpdate, requestId: string): Promise<ProfileRecord> {
+    if (!isUuid(userId) || !requestId || requestId.length > 128 || !this.executor.withProfileWriter) {
+      throw new Error('profile writer is unavailable');
+    }
+    return this.executor.withProfileWriter(userId, async (query) => {
+      const result = await query.query(profileUpdateSql, [
+        update.displayName ?? null,
+        Object.prototype.hasOwnProperty.call(update, 'bio'),
+        update.bio ?? null,
+        userId,
+      ]);
+      const profile = result.rows.length === 1 ? profileFromRow(result.rows[0]) : null;
+      if (!profile || profile.userId !== userId) throw new Error('profile not found');
+      const changedFieldNames = [
+        ...(Object.prototype.hasOwnProperty.call(update, 'displayName') ? ['displayName'] : []),
+        ...(Object.prototype.hasOwnProperty.call(update, 'bio') ? ['bio'] : []),
+      ].join(',');
+      if (!changedFieldNames) throw new Error('No approved fields to audit');
+      await query.query(profileAuditSql, [userId, requestId, changedFieldNames]);
+      return profile;
+    });
+  }
 }
 
 function parseRoles(value: string): readonly string[] {
