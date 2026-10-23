@@ -31,7 +31,9 @@ export type AccessPolicyReason =
   | 'relationship_unavailable'
   | 'blocked'
   | 'mfa_required'
-  | 'invalid_operation';
+  | 'invalid_operation'
+  | 'approval_required'
+  | 'scope_required';
 
 export type BlockRelationState = {
   blockedByActor: boolean;
@@ -46,6 +48,12 @@ export type AccessPolicyInput = {
   blockRelation?: BlockRelationState | null;
   /** MFA is deliberately an explicit server-side input; it is never read from JWT claims. */
   mfaVerified?: boolean;
+  /** Explicitly approved by trusted server-side relationship checks. */
+  relationshipApproved?: boolean;
+  /** Approved by trusted server-side business prerequisites, not request input. */
+  prerequisitesApproved?: boolean;
+  /** Approved staff/community scope; never derived from client-side claims. */
+  approvedScope?: boolean;
 };
 
 export type AccessDecision = {
@@ -60,6 +68,9 @@ type Rule = {
   roles?: readonly AccountRole[];
   requiresTarget?: boolean;
   requiresMfa?: boolean;
+  requiresRelationship?: boolean;
+  requiresPrerequisites?: boolean;
+  requiresScope?: boolean;
   allowInactive?: boolean;
 };
 
@@ -70,15 +81,15 @@ const RULES: Record<AccessOperation, Rule> = {
   interest_settings: { minimumAuthLevel: 1 },
   post: { minimumAuthLevel: 2 },
   comment: { minimumAuthLevel: 2, requiresTarget: true },
-  thread_participate: { minimumAuthLevel: 2 },
-  community_speak: { minimumAuthLevel: 2 },
-  friend_request: { minimumAuthLevel: 2, requiresTarget: true },
-  direct_message: { minimumAuthLevel: 3, requiresTarget: true },
-  diary: { minimumAuthLevel: 3, requiresTarget: true },
-  listing: { minimumAuthLevel: 3 },
-  community_create: { minimumAuthLevel: 3 },
-  official_manage: { minimumAuthLevel: 2, memberships: ['official'], roles: ['community_moderator', 'admin'] },
-  admin_manage: { minimumAuthLevel: 4, roles: ['admin'], requiresMfa: true },
+  thread_participate: { minimumAuthLevel: 2, requiresPrerequisites: true },
+  community_speak: { minimumAuthLevel: 2, requiresPrerequisites: true },
+  friend_request: { minimumAuthLevel: 2, requiresTarget: true, requiresPrerequisites: true },
+  direct_message: { minimumAuthLevel: 3, requiresTarget: true, requiresRelationship: true, requiresPrerequisites: true },
+  diary: { minimumAuthLevel: 3, requiresTarget: true, requiresRelationship: true, requiresPrerequisites: true },
+  listing: { minimumAuthLevel: 3, requiresPrerequisites: true },
+  community_create: { minimumAuthLevel: 3, requiresPrerequisites: true },
+  official_manage: { minimumAuthLevel: 2, memberships: ['official'], roles: ['community_moderator', 'admin'], requiresScope: true, requiresPrerequisites: true },
+  admin_manage: { minimumAuthLevel: 4, roles: ['admin'], requiresMfa: true, requiresScope: true },
   appeal: { allowInactive: true },
 };
 
@@ -125,11 +136,24 @@ export class AccessPolicyService {
     if (rule.requiresTarget && !input.targetUserId) {
       return { operation, allowed: false, reason: 'relationship_unavailable' };
     }
-    if (input.targetUserId) {
-      if (!input.blockRelation) return { operation, allowed: false, reason: 'relationship_unavailable' };
+    if (rule.requiresTarget) {
+      if (
+        !input.blockRelation ||
+        typeof input.blockRelation.blockedByActor !== 'boolean' ||
+        typeof input.blockRelation.blockedByTarget !== 'boolean'
+      ) return { operation, allowed: false, reason: 'relationship_unavailable' };
       if (input.blockRelation.blockedByActor || input.blockRelation.blockedByTarget) {
         return { operation, allowed: false, reason: 'blocked' };
       }
+      if (rule.requiresRelationship && input.relationshipApproved !== true) {
+        return { operation, allowed: false, reason: 'relationship_unavailable' };
+      }
+    }
+    if (rule.requiresScope && input.approvedScope !== true) {
+      return { operation, allowed: false, reason: 'scope_required' };
+    }
+    if (rule.requiresPrerequisites && input.prerequisitesApproved !== true) {
+      return { operation, allowed: false, reason: 'approval_required' };
     }
     return { operation, allowed: true, reason: 'allowed' };
   }
