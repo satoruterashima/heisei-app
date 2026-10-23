@@ -103,7 +103,7 @@ const profileUpdateSql = `
 
 const profileAuditSql = `
   INSERT INTO audit_logs (actor_user_id, target_user_id, action, reason, request_id, rule_version)
-  VALUES ($1::uuid, $1::uuid, 'profile.update', 'display fields', $2, '003g')
+  VALUES ($1::uuid, $1::uuid, 'profile.update', $3, $2, '003g')
 `;
 
 function isUuid(value: string): boolean {
@@ -138,8 +138,9 @@ export class PostgresProfileStore implements ProfileStore {
     if (!isUuid(userId)) return null;
     return this.executor.withUserId(userId, async (query) => {
       const result = await query.query(profileSelectSql, [userId]);
-      const row = result.rows[0];
-      return row ? profileFromRow(row) : null;
+      const row = result.rows.length === 1 ? result.rows[0] : undefined;
+      const profile = row ? profileFromRow(row) : null;
+      return profile?.userId === userId ? profile : null;
     });
   }
 
@@ -154,9 +155,14 @@ export class PostgresProfileStore implements ProfileStore {
         update.bio ?? null,
         userId,
       ]);
-      const profile = result.rows[0] ? profileFromRow(result.rows[0]) : null;
-      if (!profile) throw new Error('profile not found');
-      await query.query(profileAuditSql, [userId, requestId]);
+      const profile = result.rows.length === 1 ? profileFromRow(result.rows[0]) : null;
+      if (!profile || profile.userId !== userId) throw new Error('profile not found');
+      const changedFieldNames = [
+        ...(Object.prototype.hasOwnProperty.call(update, 'displayName') ? ['displayName'] : []),
+        ...(Object.prototype.hasOwnProperty.call(update, 'bio') ? ['bio'] : []),
+      ].join(',');
+      if (!changedFieldNames) throw new Error('No approved fields to audit');
+      await query.query(profileAuditSql, [userId, requestId, changedFieldNames]);
       return profile;
     });
   }

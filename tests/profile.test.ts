@@ -36,6 +36,40 @@ describe('本人プロフィールAPI', () => {
     expect(response.status).toBe(422);
   });
 
+  it('rejects invalid Content-Type and oversized bodies before profile mutation', async () => {
+    let called = 0;
+    const store: ProfileStore = {
+      findOwn: async () => profile,
+      updateOwn: async () => { called++; return profile; },
+    };
+    const badType = await app(store).request('/api/v1/profile', {
+      method: 'PATCH', headers: { authorization: 'Bearer valid', 'content-type': 'text/plain' },
+      body: JSON.stringify({ displayName: 'Changed' }),
+    });
+    expect(badType.status).toBe(415);
+    const tooLarge = await app(store).request('/api/v1/profile', {
+      method: 'PATCH', headers: { authorization: 'Bearer valid', 'content-type': 'application/json' },
+      body: JSON.stringify({ bio: 'x'.repeat(9000) }),
+    });
+    expect(tooLarge.status).toBe(413);
+    expect(called).toBe(0);
+  });
+
+  it('never returns a profile belonging to a different user', async () => {
+    const mismatched = { ...profile, userId: '00000000-0000-4000-8000-000000000002' };
+    const store: ProfileStore = {
+      findOwn: async () => mismatched,
+      updateOwn: async () => mismatched,
+    };
+    const get = await app(store).request('/api/v1/profile', { headers: { authorization: 'Bearer valid' } });
+    expect(get.status).toBe(404);
+    const patch = await app(store).request('/api/v1/profile', {
+      method: 'PATCH', headers: { authorization: 'Bearer valid', 'content-type': 'application/json' },
+      body: JSON.stringify({ displayName: 'test' }),
+    });
+    expect(patch.status).toBe(500);
+  });
+
   it('passes only displayName/bio to the store and does not report success after a store failure', async () => {
     let received: unknown;
     const store: ProfileStore = {

@@ -78,6 +78,19 @@ describe.skipIf(!container || !databaseUrl)('real JWT → Hono → isolated Post
     expect(adminSql(`SELECT count(*)::text FROM audit_logs WHERE actor_user_id = '${userId}'::uuid AND action = 'profile.update'`)).toBe('1');
   });
 
+  it('rejects cross-user updates and privileged-column writes at RLS and SQL grant boundaries', async () => {
+    await executor.withProfileWriter!(userId, async (query) => {
+      const result = await query.query<{ user_id: string }>(
+        'UPDATE profiles SET display_name = $1 WHERE id = $2::uuid RETURNING id::text AS user_id',
+        ['Cannot change target', targetId],
+      );
+      expect(result.rows).toHaveLength(0);
+      await expect(query.query(
+        'UPDATE profiles SET auth_level = $1 WHERE id = $2::uuid', [4, userId],
+      )).rejects.toThrow();
+    });
+  });
+
   it('rolls back profile changes when the audit insert fails', async () => {
     const failingExecutor: TrustedPostgresExecutor = {
       withAuthSubject: executor.withAuthSubject.bind(executor),

@@ -77,7 +77,7 @@ export function createApiApp(authOrOptions?: AuthMiddlewareOptions | ApiOptions)
       return c.json({ error: { code: 'service_unavailable', message: 'Profile storage is not configured' }, requestId }, 503);
     }
     const profile = await options.profileStore.findOwn(identity.userId).catch(() => null);
-    if (!profile) return c.json({ error: { code: 'not_found', message: 'Profile not found' }, requestId }, 404);
+    if (!profile || profile.userId !== identity.userId) return c.json({ error: { code: 'not_found', message: 'Profile not found' }, requestId }, 404, { 'Cache-Control': 'no-store' });
     return c.json({ data: { profile: safeProfile(profile) }, requestId }, 200, { 'Cache-Control': 'no-store', 'X-Request-ID': requestId });
   });
   app.patch('/api/v1/profile', async (c) => {
@@ -90,11 +90,18 @@ export function createApiApp(authOrOptions?: AuthMiddlewareOptions | ApiOptions)
     if (!options.profileStore) {
       return c.json({ error: { code: 'service_unavailable', message: 'Profile storage is not configured' }, requestId }, 503);
     }
+    const contentType = c.req.header('content-type')?.split(';')[0]?.trim().toLowerCase();
+    if (contentType !== 'application/json') {
+      return c.json({ error: { code: 'invalid_request', message: 'JSON Content-Type required' }, requestId }, 415, { 'Cache-Control': 'no-store' });
+    }
     let body: unknown;
     try {
-      body = await c.req.json();
-    } catch {
-      return c.json({ error: { code: 'invalid_request', message: 'JSON body is required' }, requestId }, 400);
+      body = await readLimitedProfileJson(c.req.raw, 8192);
+    } catch (error) {
+      if (error instanceof ProfileRequestTooLarge) {
+        return c.json({ error: { code: 'invalid_request', message: 'Profile request too large' }, requestId }, 413, { 'Cache-Control': 'no-store' });
+      }
+      return c.json({ error: { code: 'invalid_request', message: 'Valid JSON body is required' }, requestId }, 400, { 'Cache-Control': 'no-store' });
     }
     const parsed = updateProfileSchema.safeParse(body);
     if (!parsed.success) {
@@ -102,6 +109,7 @@ export function createApiApp(authOrOptions?: AuthMiddlewareOptions | ApiOptions)
     }
     try {
       const profile = await options.profileStore.updateOwn(identity.userId, parsed.data, requestId);
+      if (profile.userId !== identity.userId) throw new Error('Unexpected profile owner');
       return c.json({ data: { profile: safeProfile(profile) }, requestId }, 200, { 'Cache-Control': 'no-store', 'X-Request-ID': requestId });
     } catch {
       // ProfileStore must update and audit in one transaction. Any audit or DB
@@ -156,6 +164,34 @@ export function createApiAppWithDatabase(options: DatabaseApiOptions) {
     loadBlockRelation: (actor, target) => blockStore.findBetween(actor, target),
     profileStore: new PostgresProfileStore(options.executor),
   });
+}
+
+class ProfileRequestTooLarge extends Error {}
+
+async function readLimitedProfileJson(request: Request, maximumBytes: number): Promise<unknown> {
+  const declared = request.headers.get('content-length');
+  if (declared !== null && Number(declared) > maximumBytes) throw new ProfileRequestTooLarge();
+  if (!request.body) throw new Error('Missing request body');
+  const reader = request.body.getReader();
+  const parts: Uint8Array[] = [];
+  let bytes = 0;
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    bytes += value.byteLength;
+    if (bytes > maximumBytes) {
+      await reader.cancel();
+      throw new ProfileRequestTooLarge();
+    }
+    parts.push(value);
+  }
+  const buffer = new Uint8Array(bytes);
+  let offset = 0;
+  for (const part of parts) {
+    buffer.set(part, offset);
+    offset += part.byteLength;
+  }
+  return JSON.parse(new TextDecoder('utf-8', { fatal: true }).decode(buffer)) as unknown;
 }
 
 function safeProfile(profile: { userId: string; username: string; displayName: string; bio: string | null; favoriteGenres: string | null; avatarUrl: string | null; updatedAt: string }) {
