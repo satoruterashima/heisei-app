@@ -19,7 +19,12 @@ function bearerToken(request: Request): string | null {
 }
 
 function unauthorized(c: Context, message = 'Authentication required') {
-  return c.json({ error: { code: 'unauthorized', message } }, 401);
+  const requestId = crypto.randomUUID();
+  return c.json(
+    { error: { code: 'unauthorized', message }, requestId },
+    401,
+    { 'Cache-Control': 'no-store', 'X-Request-ID': requestId },
+  );
 }
 
 /** Provider-neutral Hono middleware. Production callers must provide a real verifier and loader. */

@@ -24,6 +24,7 @@ export type JwtClaims = {
   iss: string;
   aud: string | readonly string[];
   exp: number;
+  nbf?: number;
   iat?: number;
   jti?: string;
 };

@@ -1,0 +1,160 @@
+import { describe, expect, it } from 'vitest';
+import { JwksJwtVerifier, JwtVerificationError } from '../packages/auth/src/index.js';
+
+const issuer = 'https://issuer.example.test';
+const audience = 'heisei-mobile';
+
+function base64url(value: Uint8Array | string): string {
+  const bytes = typeof value === 'string' ? new TextEncoder().encode(value) : value;
+  let binary = '';
+  for (const byte of bytes) binary += String.fromCharCode(byte);
+  return btoa(binary).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/u, '');
+}
+
+async function createKey(kid: string) {
+  const pair = await crypto.subtle.generateKey(
+    { name: 'RSASSA-PKCS1-v1_5', modulusLength: 2048, publicExponent: new Uint8Array([1, 0, 1]), hash: 'SHA-256' },
+    true,
+    ['sign', 'verify'],
+  );
+  const jwk = await crypto.subtle.exportKey('jwk', pair.publicKey);
+  return { pair, jwk: { ...jwk, kid, alg: 'RS256', use: 'sig' } };
+}
+
+async function signToken(privateKey: CryptoKey, overrides: Record<string, unknown> = {}, header: Record<string, unknown> = {}) {
+  const payload = {
+    sub: 'provider-subject-1',
+    iss: issuer,
+    aud: audience,
+    exp: Math.floor(Date.now() / 1000) + 300,
+    ...overrides,
+  };
+  const encodedHeader = base64url(JSON.stringify({ alg: 'RS256', typ: 'JWT', kid: 'key-1', ...header }));
+  const encodedPayload = base64url(JSON.stringify(payload));
+  const input = `${encodedHeader}.${encodedPayload}`;
+  const signature = await crypto.subtle.sign({ name: 'RSASSA-PKCS1-v1_5' }, privateKey, new TextEncoder().encode(input));
+  return `${input}.${base64url(new Uint8Array(signature))}`;
+}
+
+describe('JWKS JWT verifier', () => {
+  it('verifies a real RS256 JWT and standard claims', async () => {
+    const key = await createKey('key-1');
+    const verifier = new JwksJwtVerifier({
+      issuer,
+      audience,
+      jwksUri: 'https://issuer.example.test/.well-known/jwks.json',
+      fetcher: async () => new Response(JSON.stringify({ keys: [key.jwk] }), { status: 200 }),
+    });
+    const claims = await verifier.verify(await signToken(key.pair.privateKey));
+    expect(claims.sub).toBe('provider-subject-1');
+    expect(claims.iss).toBe(issuer);
+  });
+
+  it.each([
+    ['tampered signature', { tamper: true }],
+    ['expired token', { overrides: { exp: 1 } }],
+    ['not-before token', { overrides: { nbf: Math.floor(Date.now() / 1000) + 600 } }],
+    ['wrong issuer', { overrides: { iss: 'https://attacker.example.test' } }],
+    ['wrong audience', { overrides: { aud: 'other-service' } }],
+    ['algorithm confusion', { header: { alg: 'HS256' } }],
+    ['none algorithm', { header: { alg: 'none' } }],
+    ['empty subject', { overrides: { sub: '' } }],
+    ['future issued-at', { overrides: { iat: Math.floor(Date.now() / 1000) + 600 } }],
+    ['invalid jti', { overrides: { jti: 5 } }],
+    ['missing kid', { header: { kid: '' } }],
+  ] as const)('rejects %s', async (_label, options: { overrides?: Record<string, unknown>; header?: Record<string, unknown>; tamper?: boolean }) => {
+    const key = await createKey('key-1');
+    const verifier = new JwksJwtVerifier({
+      issuer,
+      audience,
+      jwksUri: 'https://issuer.example.test/.well-known/jwks.json',
+      fetcher: async () => new Response(JSON.stringify({ keys: [key.jwk] }), { status: 200 }),
+    });
+    let token = await signToken(key.pair.privateKey, options.overrides, options.header);
+    if (options.tamper) {
+      const segments = token.split('.');
+      const signature = segments[2];
+      const middle = Math.floor(signature.length / 2);
+      segments[2] = signature.slice(0, middle) + (signature[middle] === 'A' ? 'B' : 'A') + signature.slice(middle + 1);
+      token = segments.join('.');
+    }
+    await expect(verifier.verify(token)).rejects.toBeInstanceOf(JwtVerificationError);
+  });
+
+  it('rejects a non-canonical base64url signature encoding', async () => {
+    const key = await createKey('key-1');
+    const verifier = new JwksJwtVerifier({
+      issuer,
+      audience,
+      jwksUri: 'https://issuer.example.test/.well-known/jwks.json',
+      fetcher: async () => new Response(JSON.stringify({ keys: [key.jwk] })),
+    });
+    const token = await signToken(key.pair.privateKey);
+    const sections = token.split('.');
+    const signature = sections[2];
+    const alphabet = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_';
+    const last = alphabet.indexOf(signature[signature.length - 1]);
+    expect(last).toBeGreaterThanOrEqual(0);
+    // A 2048-bit RSA signature has a trailing base64url symbol with unused bits.
+    sections[2] = signature.slice(0, -1) + alphabet[last + 1];
+    await expect(verifier.verify(sections.join('.'))).rejects.toBeInstanceOf(JwtVerificationError);
+  });
+
+  it('refreshes JWKS when a newly rotated kid appears', async () => {
+    const oldKey = await createKey('key-1');
+    const newKey = await createKey('key-2');
+    let calls = 0;
+    const verifier = new JwksJwtVerifier({
+      issuer,
+      audience,
+      jwksUri: 'https://issuer.example.test/.well-known/jwks.json',
+      fetcher: async () => {
+        calls += 1;
+        return new Response(JSON.stringify({ keys: [calls === 1 ? oldKey.jwk : newKey.jwk] }), { status: 200 });
+      },
+    });
+    await verifier.verify(await signToken(oldKey.pair.privateKey));
+    const rotated = await signToken(newKey.pair.privateKey, {}, { kid: 'key-2' });
+    await verifier.verify(rotated);
+    expect(calls).toBe(2);
+  });
+  it('limits JWKS refreshes for multiple missing key ids', async () => {
+    const key = await createKey('key-1');
+    let calls = 0;
+    const verifier = new JwksJwtVerifier({
+      issuer,
+      audience,
+      jwksUri: 'https://issuer.example.test/.well-known/jwks.json',
+      fetcher: async () => {
+        calls += 1;
+        return new Response(JSON.stringify({ keys: [key.jwk] }));
+      },
+    });
+    const unknown1 = await signToken(key.pair.privateKey, {}, { kid: 'missing-1' });
+    const unknown2 = await signToken(key.pair.privateKey, {}, { kid: 'missing-2' });
+    await expect(verifier.verify(unknown1)).rejects.toBeInstanceOf(JwtVerificationError);
+    await expect(verifier.verify(unknown2)).rejects.toBeInstanceOf(JwtVerificationError);
+    expect(calls).toBe(1);
+  });
+
+  it('rejects unknown keys, invalid JWKS material and oversized JWTs', async () => {
+    const key = await createKey('key-1');
+    const verifier = new JwksJwtVerifier({
+      issuer,
+      audience,
+      jwksUri: 'https://issuer.example.test/.well-known/jwks.json',
+      fetcher: async () => new Response(JSON.stringify({ keys: [{ kid: 'key-1', kty: 'oct', k: 'invalid' }] })),
+    });
+    await expect(verifier.verify(await signToken(key.pair.privateKey))).rejects.toBeInstanceOf(JwtVerificationError);
+    await expect(verifier.verify('a'.repeat(16_385))).rejects.toBeInstanceOf(JwtVerificationError);
+  });
+
+  it('requires a trusted HTTPS JWKS URL', () => {
+    expect(() => new JwksJwtVerifier({
+      issuer,
+      audience,
+      jwksUri: 'http://issuer.example.test/jwks',
+    })).toThrow('HTTPS');
+  });
+
+});
