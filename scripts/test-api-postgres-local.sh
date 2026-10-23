@@ -43,8 +43,12 @@ psql_file < "$repo_root/packages/database/drizzle/0000_baseline_profiles.sql" >/
 psql_file < "$repo_root/packages/database/drizzle/0000_auth_foundation.sql" >/dev/null
 psql_file < "$repo_root/packages/database/drizzle/roles.sql" >/dev/null
 psql_file < "$repo_root/packages/database/drizzle/0001_profile_visibility.sql" >/dev/null
+psql_file < "$repo_root/packages/database/drizzle/0001_report_foundation_g4a.sql" >/dev/null
+psql_file < "$repo_root/packages/database/drizzle/roles.sql" >/dev/null
 # Reapply the local foundation and role grants to verify migration idempotency.
 psql_file < "$repo_root/packages/database/drizzle/0000_auth_foundation.sql" >/dev/null
+psql_file < "$repo_root/packages/database/drizzle/roles.sql" >/dev/null
+psql_file < "$repo_root/packages/database/drizzle/0001_report_foundation_g4a.sql" >/dev/null
 psql_file < "$repo_root/packages/database/drizzle/roles.sql" >/dev/null
 psql_file < "$repo_root/packages/database/drizzle/0001_profile_visibility.sql" >/dev/null
 psql_file <<'SQL' >/dev/null
