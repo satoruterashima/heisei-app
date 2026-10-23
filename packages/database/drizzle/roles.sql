@@ -1,22 +1,27 @@
--- Local role boundary for HEISEI-003B-R1.
+-- Local role boundary for HEISEI-003B-R2.
 -- Create matching production roles through the approved platform process; do not
 -- put passwords or service credentials in this file.
 
 DO $$
 BEGIN
   IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'heisei_app') THEN
-    CREATE ROLE heisei_app NOLOGIN;
+    CREATE ROLE heisei_app NOLOGIN NOSUPERUSER NOBYPASSRLS;
   END IF;
   IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'heisei_staff') THEN
-    CREATE ROLE heisei_staff NOLOGIN;
+    CREATE ROLE heisei_staff NOLOGIN NOSUPERUSER NOBYPASSRLS;
   END IF;
   IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'heisei_audit_writer') THEN
-    CREATE ROLE heisei_audit_writer NOLOGIN;
+    CREATE ROLE heisei_audit_writer NOLOGIN NOSUPERUSER NOBYPASSRLS;
   END IF;
   IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'heisei_identity_writer') THEN
-    CREATE ROLE heisei_identity_writer NOLOGIN;
+    CREATE ROLE heisei_identity_writer NOLOGIN NOSUPERUSER NOBYPASSRLS;
   END IF;
 END $$;
+
+ALTER ROLE heisei_app NOSUPERUSER NOBYPASSRLS NOLOGIN;
+ALTER ROLE heisei_staff NOSUPERUSER NOBYPASSRLS NOLOGIN;
+ALTER ROLE heisei_audit_writer NOSUPERUSER NOBYPASSRLS NOLOGIN;
+ALTER ROLE heisei_identity_writer NOSUPERUSER NOBYPASSRLS NOLOGIN;
 
 REVOKE ALL ON profiles, user_verifications, user_settings, blocks, audit_logs FROM heisei_app;
 GRANT SELECT ON profiles, user_verifications, user_settings, blocks TO heisei_app;

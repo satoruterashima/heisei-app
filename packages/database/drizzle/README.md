@@ -16,11 +16,27 @@ normal application role cannot forge events. Authentication evidence and the
 privileged profile columns are written only through the separate
 `heisei_identity_writer` role.
 
+The migration separates owner, staff, and identity-writer policies by database
+role. `app.user_id` and `app.staff_scope` are transaction-local values supplied
+only after trusted server authorization; setting a GUC never grants access on
+its own. The local role definitions are `NOSUPERUSER` and `NOBYPASSRLS`.
+
 ```sh
 psql "$LOCAL_DATABASE_URL" -v ON_ERROR_STOP=1 -f packages/database/drizzle/0000_baseline_profiles.sql
 psql "$LOCAL_DATABASE_URL" -v ON_ERROR_STOP=1 -f packages/database/drizzle/0000_auth_foundation.sql
 psql "$LOCAL_DATABASE_URL" -v ON_ERROR_STOP=1 -f packages/database/drizzle/roles.sql
 ```
+
+Run the reproducible, disposable PostgreSQL security checks with Docker:
+
+```sh
+bash scripts/test-database-local.sh
+```
+
+The script creates non-owner, non-superuser, `NOBYPASSRLS` login roles and
+checks safe profile updates, privileged-column denial, staff scope, identity
+evidence writes, audit-writer boundaries, append-only audit logs, and migration
+first/reapply behavior. It never connects to a configured external database.
 
 Re-running the migration is intended to be idempotent. A rollback is performed by
 discarding the disposable database. On a database containing data, use an

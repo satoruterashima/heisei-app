@@ -95,48 +95,84 @@ ALTER TABLE audit_logs ENABLE ROW LEVEL SECURITY;
 -- The application role receives only safe profile columns through roles.sql.
 -- These columns must never be granted UPDATE to a general API role.
 REVOKE UPDATE (auth_subject, auth_level, membership, roles_json, account_status) ON profiles FROM PUBLIC;
+REVOKE ALL ON user_verifications FROM PUBLIC;
 REVOKE ALL ON audit_logs FROM PUBLIC;
 
+-- GUC values are transaction-local inputs from the trusted API role. A GUC is
+-- not an identity proof by itself; each policy also requires the dedicated DB
+-- role selected after server-side JWT and identity verification.
 DROP POLICY IF EXISTS profiles_owner_select ON profiles;
 CREATE POLICY profiles_owner_select ON profiles FOR SELECT
-  USING (id::text = current_setting('app.user_id', true));
+  USING (current_user = 'heisei_app'
+      AND id::text = current_setting('app.user_id', true));
 DROP POLICY IF EXISTS profiles_owner_update ON profiles;
 CREATE POLICY profiles_owner_update ON profiles FOR UPDATE
-  USING (id::text = current_setting('app.user_id', true))
-  WITH CHECK (id::text = current_setting('app.user_id', true));
+  USING (current_user = 'heisei_app'
+      AND id::text = current_setting('app.user_id', true))
+  WITH CHECK (current_user = 'heisei_app'
+      AND id::text = current_setting('app.user_id', true));
 DROP POLICY IF EXISTS profiles_staff_scoped_select ON profiles;
 CREATE POLICY profiles_staff_scoped_select ON profiles FOR SELECT
   USING (current_user = 'heisei_staff' AND id::text = current_setting('app.staff_scope', true));
+DROP POLICY IF EXISTS profiles_identity_select ON profiles;
+CREATE POLICY profiles_identity_select ON profiles FOR SELECT
+  USING (current_user = 'heisei_identity_writer'
+      AND id::text = current_setting('app.user_id', true));
+DROP POLICY IF EXISTS profiles_identity_update ON profiles;
+CREATE POLICY profiles_identity_update ON profiles FOR UPDATE
+  USING (current_user = 'heisei_identity_writer'
+      AND id::text = current_setting('app.user_id', true))
+  WITH CHECK (current_user = 'heisei_identity_writer'
+      AND id::text = current_setting('app.user_id', true));
 
 DROP POLICY IF EXISTS user_verifications_owner_select ON user_verifications;
 CREATE POLICY user_verifications_owner_select ON user_verifications FOR SELECT
-  USING (user_id::text = current_setting('app.user_id', true));
+  USING (current_user = 'heisei_app'
+      AND user_id::text = current_setting('app.user_id', true));
 DROP POLICY IF EXISTS user_verifications_staff_scoped_select ON user_verifications;
 CREATE POLICY user_verifications_staff_scoped_select ON user_verifications FOR SELECT
   USING (current_user = 'heisei_staff' AND user_id::text = current_setting('app.staff_scope', true));
+DROP POLICY IF EXISTS user_verifications_identity_select ON user_verifications;
+CREATE POLICY user_verifications_identity_select ON user_verifications FOR SELECT
+  USING (current_user = 'heisei_identity_writer'
+      AND user_id::text = current_setting('app.user_id', true));
+DROP POLICY IF EXISTS user_verifications_identity_insert ON user_verifications;
+CREATE POLICY user_verifications_identity_insert ON user_verifications FOR INSERT
+  WITH CHECK (current_user = 'heisei_identity_writer'
+      AND user_id::text = current_setting('app.user_id', true));
+DROP POLICY IF EXISTS user_verifications_identity_update ON user_verifications;
+CREATE POLICY user_verifications_identity_update ON user_verifications FOR UPDATE
+  USING (current_user = 'heisei_identity_writer'
+      AND user_id::text = current_setting('app.user_id', true))
+  WITH CHECK (current_user = 'heisei_identity_writer'
+      AND user_id::text = current_setting('app.user_id', true));
 
 DROP POLICY IF EXISTS user_settings_owner_all ON user_settings;
 CREATE POLICY user_settings_owner_all ON user_settings
-  USING (user_id::text = current_setting('app.user_id', true))
-  WITH CHECK (user_id::text = current_setting('app.user_id', true));
+  USING (current_user = 'heisei_app'
+      AND user_id::text = current_setting('app.user_id', true))
+  WITH CHECK (current_user = 'heisei_app'
+      AND user_id::text = current_setting('app.user_id', true));
 
 DROP POLICY IF EXISTS blocks_participant_select ON blocks;
 CREATE POLICY blocks_participant_select ON blocks FOR SELECT
-  USING (blocker_id::text = current_setting('app.user_id', true)
-      OR blocked_id::text = current_setting('app.user_id', true));
+  USING (current_user = 'heisei_app'
+      AND (blocker_id::text = current_setting('app.user_id', true)
+        OR blocked_id::text = current_setting('app.user_id', true)));
 DROP POLICY IF EXISTS blocks_owner_insert ON blocks;
 CREATE POLICY blocks_owner_insert ON blocks FOR INSERT
-  WITH CHECK (blocker_id::text = current_setting('app.user_id', true));
+  WITH CHECK (current_user = 'heisei_app'
+      AND blocker_id::text = current_setting('app.user_id', true));
 DROP POLICY IF EXISTS blocks_owner_delete ON blocks;
 CREATE POLICY blocks_owner_delete ON blocks FOR DELETE
-  USING (blocker_id::text = current_setting('app.user_id', true));
+  USING (current_user = 'heisei_app'
+      AND blocker_id::text = current_setting('app.user_id', true));
 
 DROP POLICY IF EXISTS audit_logs_scoped_select ON audit_logs;
 CREATE POLICY audit_logs_scoped_select ON audit_logs FOR SELECT
-  USING (actor_user_id::text = current_setting('app.user_id', true)
-      OR target_user_id::text = current_setting('app.user_id', true)
-      OR (current_user = 'heisei_staff' AND actor_user_id::text = current_setting('app.staff_scope', true))
-      OR (current_user = 'heisei_staff' AND target_user_id::text = current_setting('app.staff_scope', true)));
+  USING (current_user = 'heisei_staff'
+      AND (actor_user_id::text = current_setting('app.staff_scope', true)
+        OR target_user_id::text = current_setting('app.staff_scope', true)));
 DROP POLICY IF EXISTS audit_logs_actor_insert ON audit_logs;
 DROP POLICY IF EXISTS audit_logs_trusted_insert ON audit_logs;
 CREATE POLICY audit_logs_trusted_insert ON audit_logs FOR INSERT
