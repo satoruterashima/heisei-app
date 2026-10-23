@@ -1,8 +1,8 @@
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { execFileSync } from 'node:child_process';
-import { JwksJwtVerifier } from '../packages/auth/src/index.js';
+import { evaluateUserVisibility, JwksJwtVerifier } from '../packages/auth/src/index.js';
 import { createApiAppWithDatabase } from '../apps/api/src/index.js';
-import { PostgresBlockRelationStore, PostgresProfileStore } from '../packages/database/src/index.js';
+import { PostgresBlockRelationStore, PostgresProfileStore, PostgresIdentityRecordStore, PostgresUserVisibilityRepository } from '../packages/database/src/index.js';
 import { createLocalTrustedPostgresExecutor } from '../packages/database/src/local-postgres-executor.js';
 import type { TrustedPostgresExecutor } from '../packages/database/src/index.js';
 
@@ -421,5 +421,70 @@ describe.skipIf(!container || !databaseUrl)('real JWT → Hono → isolated Post
       return result.rows[0]?.user_id;
     });
     await expect(Promise.all([read(userId), read(targetId)])).resolves.toEqual([userId, targetId]);
+  });
+
+  it('evaluates public profile visibility through real JWT identity, RLS, and PostgreSQL', async () => {
+    adminSql(`DELETE FROM blocks WHERE (blocker_id, blocked_id) IN (('${userId}'::uuid, '${targetId}'::uuid), ('${targetId}'::uuid, '${userId}'::uuid))`);
+    adminSql(`UPDATE profiles SET profile_visibility = 'public', account_status = 'active' WHERE id = '${targetId}'::uuid`);
+    const { verifier, token } = await signedToken();
+    const session = await createApiAppWithDatabase({ verifier, executor }).request('/api/v1/session', {
+      headers: { authorization: `Bearer ${token}` },
+    });
+    expect(session.status).toBe(200);
+    const identity = await new PostgresIdentityRecordStore(executor).findByAuthSubject(subject);
+    expect(identity).not.toBeNull();
+    const generalRoleRead = await executor.withUserId(userId, (query) => query.query(
+      'SELECT id::text AS target_user_id FROM profiles WHERE id = $1::uuid', [targetId],
+    ));
+    expect(generalRoleRead.rows).toHaveLength(0);
+    const repository = new PostgresUserVisibilityRepository(executor);
+    const allowed = await repository.findEvidence({ userId: identity!.userId, status: identity!.accountStatus as 'active' }, targetId);
+    expect(evaluateUserVisibility(allowed)).toEqual({ result: 'allow' });
+
+    await expect(executor.withVisibilityReader!(userId, targetId, (query) => query.query(
+      'SELECT username FROM profiles WHERE id = $1::uuid', [targetId],
+    ))).rejects.toThrow();
+    const readerTarget = await executor.withVisibilityReader!(userId, targetId, (query) => query.query(
+      'SELECT id::text AS target_user_id, account_status, profile_visibility FROM profiles WHERE id = $1::uuid', [targetId],
+    ));
+    expect(readerTarget.rows).toHaveLength(1);
+    const readerOtherTarget = await executor.withVisibilityReader!(userId, targetId, (query) => query.query(
+      'SELECT id::text AS target_user_id FROM profiles WHERE id = $1::uuid', [userId],
+    ));
+    expect(readerOtherTarget.rows).toHaveLength(0);
+    await expect(executor.withVisibilityReader!(userId, targetId, (query) => query.query(
+      'INSERT INTO blocks (blocker_id, blocked_id) VALUES ($1::uuid, $2::uuid)', [userId, targetId],
+    ))).rejects.toThrow();
+    await expect(executor.withVisibilityReader!(userId, targetId, (query) => query.query(
+      'DELETE FROM blocks WHERE blocker_id = $1::uuid AND blocked_id = $2::uuid', [userId, targetId],
+    ))).rejects.toThrow();
+
+    adminSql(`INSERT INTO blocks (blocker_id, blocked_id) VALUES ('${userId}'::uuid, '${targetId}'::uuid)`);
+    const blocked = await repository.findEvidence({ userId: identity!.userId, status: 'active' }, targetId);
+    expect(evaluateUserVisibility(blocked)).toEqual({ result: 'deny' });
+
+    adminSql(`DELETE FROM blocks WHERE blocker_id = '${userId}'::uuid AND blocked_id = '${targetId}'::uuid`);
+    adminSql(`INSERT INTO blocks (blocker_id, blocked_id) VALUES ('${targetId}'::uuid, '${userId}'::uuid)`);
+    const blockedByTarget = await repository.findEvidence({ userId: identity!.userId, status: 'active' }, targetId);
+    expect(evaluateUserVisibility(blockedByTarget)).toEqual({ result: 'deny' });
+    adminSql(`DELETE FROM blocks WHERE blocker_id = '${targetId}'::uuid AND blocked_id = '${userId}'::uuid`);
+
+    adminSql(`UPDATE profiles SET account_status = 'suspended' WHERE id = '${targetId}'::uuid`);
+    const suspended = await repository.findEvidence({ userId: identity!.userId, status: 'active' }, targetId);
+    expect(evaluateUserVisibility(suspended)).toEqual({ result: 'deny' });
+    const suspendedActor = await repository.findEvidence({ userId: identity!.userId, status: 'suspended' }, targetId);
+    expect(evaluateUserVisibility(suspendedActor)).toEqual({ result: 'deny' });
+    adminSql(`UPDATE profiles SET account_status = 'active' WHERE id = '${targetId}'::uuid`);
+    adminSql(`UPDATE profiles SET profile_visibility = 'private' WHERE id = '${targetId}'::uuid`);
+    const privateEvidence = await repository.findEvidence({ userId: identity!.userId, status: 'active' }, targetId);
+    expect(evaluateUserVisibility(privateEvidence)).toEqual({ result: 'deny' });
+    await expect(executor.withVisibilityReader!(userId, targetId, (query) => query.query(
+      'UPDATE profiles SET profile_visibility = $1 WHERE id = $2::uuid', ['public', targetId],
+    ))).rejects.toThrow();
+
+    const unavailable = await new PostgresUserVisibilityRepository({
+      withVisibilityReader: async () => { throw new Error('database outage with private details'); },
+    }).findEvidence({ userId: identity!.userId, status: 'active' }, targetId);
+    expect(evaluateUserVisibility(unavailable)).toEqual({ result: 'unavailable' });
   });
 });
