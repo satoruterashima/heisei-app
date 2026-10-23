@@ -1,4 +1,5 @@
 import type { BlockRelation, BlockRelationStore, IdentityRecord, IdentityRecordStore, VerificationStatus } from './identity-loader.js';
+import type { AuthIdentity, VisibilityAccountStatus, VisibilityEvidence } from '@heisei/auth';
 
 /** A deliberately small adapter for whichever PostgreSQL driver the server approves. */
 export interface PostgresQueryExecutor {
@@ -19,6 +20,7 @@ export interface TrustedPostgresExecutor {
   /** Optional until every approved executor supports the atomic profile writer role. */
   withProfileWriter?<T>(userId: string, operation: (query: PostgresQueryExecutor) => Promise<T>): Promise<T>;
   withBlockWriter?<T>(userId: string, operation: (query: PostgresQueryExecutor) => Promise<T>): Promise<T>;
+  withVisibilityReader?<T>(actorUserId: string, targetUserId: string, operation: (query: PostgresQueryExecutor) => Promise<T>): Promise<T>;
 }
 
 export interface BlockMutationStore {
@@ -89,6 +91,12 @@ const blockSql = `
       SELECT 1 FROM blocks
       WHERE blocker_id = $2::uuid AND blocked_id = $1::uuid
     ) AS blocked_by_target
+`;
+
+const visibilityTargetSql = `
+  SELECT id::text AS target_user_id, account_status, profile_visibility
+  FROM profiles
+  WHERE id = $1::uuid
 `;
 
 const profileSelectSql = `
@@ -323,5 +331,117 @@ export class PostgresBlockRelationStore implements BlockRelationStore {
         blockedByTarget: row.blocked_by_target,
       };
     });
+  }
+}
+
+type VisibilityTargetRow = {
+  target_user_id: string;
+  account_status: string;
+  profile_visibility: string | null;
+};
+
+export interface UserVisibilityRepository {
+  findEvidence(
+    actor: Pick<AuthIdentity, 'userId' | 'status'>,
+    targetUserId: string,
+  ): Promise<VisibilityEvidence>;
+}
+
+type VisibilityExecutor = Pick<TrustedPostgresExecutor, 'withVisibilityReader'>;
+
+function visibilityUnavailable(actorUserId: string, targetUserId: string): VisibilityEvidence {
+  return {
+    actorUserId,
+    targetUserId,
+    actorStatus: 'unavailable',
+    targetStatus: 'unavailable',
+    targetState: 'unavailable',
+    profileVisibility: 'unavailable',
+    blockRelation: 'unavailable',
+    relationship: 'unavailable',
+  };
+}
+
+function isVisibilityUuid(value: string): boolean {
+  return /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/iu.test(value);
+}
+
+function mapVisibilityStatus(value: string): VisibilityAccountStatus {
+  if (value === 'active' || value === 'ai_suspended' || value === 'suspended' || value === 'banned') return value;
+  return 'unknown';
+}
+
+/**
+ * Reads only the public target projection and both block directions inside a
+ * dedicated visibility-reader transaction. It never returns a client-facing
+ * profile and converts dependency failures to unavailable evidence.
+ */
+export class PostgresUserVisibilityRepository implements UserVisibilityRepository {
+  constructor(private readonly executor: VisibilityExecutor) {}
+
+  async findEvidence(
+    actor: Pick<AuthIdentity, 'userId' | 'status'>,
+    targetUserId: string,
+  ): Promise<VisibilityEvidence> {
+    if (!isVisibilityUuid(actor.userId) || !isVisibilityUuid(targetUserId)) {
+      return {
+        ...visibilityUnavailable(actor.userId, targetUserId),
+        actorStatus: actor.status,
+        targetState: 'absent',
+        profileVisibility: 'undefined',
+        blockRelation: { blockedByActor: false, blockedByTarget: false },
+        relationship: 'not_required',
+      };
+    }
+    if (!this.executor.withVisibilityReader) return visibilityUnavailable(actor.userId, targetUserId);
+
+    try {
+      return await this.executor.withVisibilityReader(actor.userId, targetUserId, async (query) => {
+        const profileResult = await query.query<VisibilityTargetRow>(visibilityTargetSql, [targetUserId]);
+        const row = profileResult.rows[0];
+        if (!row) {
+          return {
+            ...visibilityUnavailable(actor.userId, targetUserId),
+            actorStatus: actor.status,
+            targetState: 'absent',
+            profileVisibility: 'undefined',
+            blockRelation: { blockedByActor: false, blockedByTarget: false },
+            relationship: 'not_required',
+          };
+        }
+        if (
+          row.target_user_id.toLowerCase() !== targetUserId.toLowerCase() ||
+          typeof row.account_status !== 'string' ||
+          (row.profile_visibility !== null && typeof row.profile_visibility !== 'string')
+        ) return visibilityUnavailable(actor.userId, targetUserId);
+
+        const blockResult = await query.query<BlockRow>(blockSql, [actor.userId, targetUserId]);
+        const block = blockResult.rows[0];
+        if (
+          !block || typeof block.blocked_by_actor !== 'boolean' ||
+          typeof block.blocked_by_target !== 'boolean'
+        ) return visibilityUnavailable(actor.userId, targetUserId);
+
+        return {
+          actorUserId: actor.userId,
+          targetUserId,
+          actorStatus: actor.status,
+          targetStatus: mapVisibilityStatus(row.account_status),
+          targetState: 'present',
+          profileVisibility: row.profile_visibility === 'public'
+            ? 'public'
+            : row.profile_visibility === 'private'
+              ? 'private'
+              : 'undefined',
+          blockRelation: {
+            blockedByActor: block.blocked_by_actor,
+            blockedByTarget: block.blocked_by_target,
+          },
+          relationship: 'not_required',
+        };
+      });
+    } catch {
+      return visibilityUnavailable(actor.userId, targetUserId);
+    }
   }
 }
