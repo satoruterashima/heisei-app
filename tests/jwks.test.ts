@@ -71,8 +71,33 @@ describe('JWKS JWT verifier', () => {
       fetcher: async () => new Response(JSON.stringify({ keys: [key.jwk] }), { status: 200 }),
     });
     let token = await signToken(key.pair.privateKey, options.overrides, options.header);
-    if (options.tamper) token = `${token.slice(0, -1)}${token.endsWith('A') ? 'B' : 'A'}`;
+    if (options.tamper) {
+      const segments = token.split('.');
+      const signature = segments[2];
+      const middle = Math.floor(signature.length / 2);
+      segments[2] = signature.slice(0, middle) + (signature[middle] === 'A' ? 'B' : 'A') + signature.slice(middle + 1);
+      token = segments.join('.');
+    }
     await expect(verifier.verify(token)).rejects.toBeInstanceOf(JwtVerificationError);
+  });
+
+  it('rejects a non-canonical base64url signature encoding', async () => {
+    const key = await createKey('key-1');
+    const verifier = new JwksJwtVerifier({
+      issuer,
+      audience,
+      jwksUri: 'https://issuer.example.test/.well-known/jwks.json',
+      fetcher: async () => new Response(JSON.stringify({ keys: [key.jwk] })),
+    });
+    const token = await signToken(key.pair.privateKey);
+    const sections = token.split('.');
+    const signature = sections[2];
+    const alphabet = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_';
+    const last = alphabet.indexOf(signature[signature.length - 1]);
+    expect(last).toBeGreaterThanOrEqual(0);
+    // A 2048-bit RSA signature has a trailing base64url symbol with unused bits.
+    sections[2] = signature.slice(0, -1) + alphabet[last + 1];
+    await expect(verifier.verify(sections.join('.'))).rejects.toBeInstanceOf(JwtVerificationError);
   });
 
   it('refreshes JWKS when a newly rotated kid appears', async () => {
