@@ -37,6 +37,8 @@ jobs:
         run: pnpm --config.verifyDepsBeforeRun=warn test
       - name: PostgreSQL RLS integration (disposable local Docker)
         run: bash scripts/test-database-local.sh
+      - name: Real JWT-to-PostgreSQL API integration (disposable Docker)
+        run: bash scripts/test-api-postgres-local.sh
       - name: Worker bundle (local dry run)
         run: pnpm --config.verifyDepsBeforeRun=warn build:check
       - name: Ensure checks preserve lockfile
