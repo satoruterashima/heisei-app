@@ -16,8 +16,9 @@ const DEFAULT_ROLES = {
   identityWriter: 'heisei_identity_writer',
   profileWriter: 'heisei_profile_writer',
   blockWriter: 'heisei_block_writer',
+  visibilityReader: 'heisei_visibility_reader',
 } as const;
-type FixedRoles = { app: string; identityWriter: string; profileWriter: string; blockWriter: string };
+type FixedRoles = { app: string; identityWriter: string; profileWriter: string; blockWriter: string; visibilityReader: string };
 
 const SAFE_ROLE = /^[a-z_][a-z0-9_]*$/u;
 
@@ -27,7 +28,7 @@ function quoteRole(role: string): string {
 }
 
 function assertSettingName(name: string): void {
-  if (!/^app\.(?:user_id|auth_subject)$/u.test(name)) throw new Error('invalid RLS setting');
+  if (!/^app\.(?:user_id|auth_subject|visibility_target_id)$/u.test(name)) throw new Error('invalid RLS setting');
 }
 
 function queryAdapter(client: PoolClient): PostgresQueryExecutor {
@@ -53,6 +54,7 @@ export class LocalTrustedPostgresExecutor implements TrustedPostgresExecutor {
     quoteRole(this.roles.identityWriter);
     quoteRole(this.roles.profileWriter);
     quoteRole(this.roles.blockWriter);
+    quoteRole(this.roles.visibilityReader);
     if (options.pool) {
       this.pool = options.pool;
       this.ownsPool = options.ownsPool ?? false;
@@ -87,6 +89,15 @@ export class LocalTrustedPostgresExecutor implements TrustedPostgresExecutor {
       throw new Error('invalid user id');
     }
     return this.withTransaction(this.roles.blockWriter, [['app.user_id', userId]], operation);
+  }
+
+  async withVisibilityReader<T>(actorUserId: string, targetUserId: string, operation: (query: PostgresQueryExecutor) => Promise<T>): Promise<T> {
+    if (!this.isUuid(actorUserId) || !this.isUuid(targetUserId)) throw new Error('invalid visibility ids');
+    return this.withTransaction(
+      this.roles.visibilityReader,
+      [['app.user_id', actorUserId], ['app.visibility_target_id', targetUserId]],
+      operation,
+    );
   }
 
   async close(): Promise<void> {
@@ -124,6 +135,10 @@ export class LocalTrustedPostgresExecutor implements TrustedPostgresExecutor {
       // broken client so pg does not return a potentially dirty socket.
       client.release(failed ? new Error('transaction failed') : undefined);
     }
+  }
+
+  private isUuid(value: string): boolean {
+    return /^[0-9a-f]{8}-(?:[0-9a-f]{4}-){3}[0-9a-f]{12}$/iu.test(value);
   }
 }
 
