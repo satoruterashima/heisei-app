@@ -71,6 +71,7 @@ BEGIN
     AND to_regclass('public.report_idempotency') IS NOT NULL THEN
     EXECUTE 'REVOKE ALL ON reports, report_idempotency, audit_logs FROM heisei_report_writer';
     EXECUTE 'GRANT SELECT, INSERT ON reports, report_idempotency TO heisei_report_writer';
+    EXECUTE 'GRANT UPDATE (last_used_at, expires_at) ON report_idempotency TO heisei_report_writer';
     EXECUTE 'GRANT INSERT ON audit_logs TO heisei_report_writer';
   END IF;
 END $$;

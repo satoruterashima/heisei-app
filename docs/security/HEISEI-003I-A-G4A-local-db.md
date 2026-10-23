@@ -12,16 +12,17 @@ G4-Aは、通報APIやG2/G3/G5のruntime統合を行わず、通報保存に必�
 - 本文なしはciphertext、nonce、algorithm version、key version、AAD versionをすべてNULLにできる。本文ありは5項目すべて必須で、部分NULLはCHECK制約で拒否する。
 - `report_idempotency`: actor scope digest、payload fingerprint、fingerprint/key version、nullable `report_id`、30日TTLのための時刻列を保持する。生key・平文本文は保持しない。
 - pendingの `(reporter_user_id, target_type, target_user_id)` は部分一意インデックスで一意化する。TTLとは独立する。
+- categoryは承認済み6値と`category-v1`に限定する。暗号envelopeはnonce 12 bytes、ciphertext 16 bytes以上、`aes-256-gcm-v1`、`aad-v1`、空でないkey versionを要求する。これらは形式制約であり、AES-GCM tagの真正性検証はG3側で行う。
 
 ## 権限境界
 
-`heisei_report_writer` は `NOLOGIN`、`NOSUPERUSER`、`NOBYPASSRLS` とし、一般roleへreportsのmutation権限を付与しない。writerは自actor行のSELECT/INSERTと、監査のINSERTだけを持ち、reports・idempotency・auditのUPDATE/DELETEは持たない。RLSはtransaction-local `app.user_id`とserver-side actor行を一致させ、他actorの行を不可視にする。
+`heisei_report_writer` は `NOLOGIN`、`NOSUPERUSER`、`NOBYPASSRLS` とし、一般roleへreportsのmutation権限を付与しない。writerは自actor行のSELECT/INSERTと、idempotencyの`last_used_at`/`expires_at`だけの列限定UPDATE、監査のINSERTを持つ。fingerprint、key version、report参照、actor等は変更できない。`report_idempotency_touch(uuid)`は同じactorの行だけを更新し、期限を最終使用から30日に再計算する。RLSはtransaction-local `app.user_id`とserver-side actor行を一致させ、他actorの行を不可視にする。
 
 監査allowlistは `report.create`、rule version `003i-g4a`、actor一致、target/request_id必須に限定する。既存のblock/profile/audit writer policyは変更しない。
 
 ## 原子性の境界
 
-隔離SQLテストでは、report INSERTと`report.create`監査INSERTの同一transaction成功、および監査失敗時のreport rollbackを確認する。G4-Aはreport API/repositoryを実装しないため、任意のreport INSERTが必ず監査を伴うことをDB単体で強制するtrigger/限定関数は未実装である。この強制方式とG2 visibility再検証を含むcommit時契約はG4-Bの追加ゲートとする。
+隔離SQLテストでは、report INSERTと`report.create`監査INSERTの同一transaction成功、および監査失敗時のreport rollbackを確認する。現状はwriterが`report.create`なしの直接report INSERTを実行できるため、DB単体で監査を必須化するtrigger/限定関数は未実装である。G4-Aではこの境界を明示し、API/repositoryでの強制とG2 visibility再検証をG4-Bの追加ゲートとする。
 
 ## 検証範囲
 

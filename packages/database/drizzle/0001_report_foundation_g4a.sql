@@ -27,6 +27,10 @@ CREATE TABLE IF NOT EXISTS reports (
   created_at timestamptz NOT NULL DEFAULT now(),
   review_closed_at timestamptz,
   CONSTRAINT reports_target_type_check CHECK (target_type = 'user'),
+  CONSTRAINT reports_category_check CHECK (category IN (
+    'harassment', 'spam', 'impersonation', 'inappropriate_content', 'fraud', 'other'
+  )),
+  CONSTRAINT reports_category_version_check CHECK (category_version = 'category-v1'),
   CONSTRAINT reports_status_check CHECK (status = 'pending'),
   CONSTRAINT reports_description_envelope_check CHECK (
     (description_ciphertext IS NULL
@@ -42,6 +46,57 @@ CREATE TABLE IF NOT EXISTS reports (
       AND aad_version IS NOT NULL)
   )
 );
+
+-- Keep these checks present if a disposable database already contains the
+-- table from an earlier G4-A iteration. Future category versions require a
+-- separately reviewed migration.
+DO $$
+BEGIN
+  BEGIN
+    ALTER TABLE reports ADD CONSTRAINT reports_category_check CHECK (category IN (
+      'harassment', 'spam', 'impersonation', 'inappropriate_content', 'fraud', 'other'
+    ));
+  EXCEPTION WHEN duplicate_object THEN NULL;
+  END;
+  BEGIN
+    ALTER TABLE reports ADD CONSTRAINT reports_category_version_check CHECK (category_version = 'category-v1');
+  EXCEPTION WHEN duplicate_object THEN NULL;
+  END;
+END $$;
+
+DO $$
+BEGIN
+  BEGIN
+    ALTER TABLE reports ADD CONSTRAINT reports_envelope_nonce_length_check CHECK (
+      description_ciphertext IS NULL OR octet_length(description_nonce) = 12
+    );
+  EXCEPTION WHEN duplicate_object THEN NULL;
+  END;
+  BEGIN
+    ALTER TABLE reports ADD CONSTRAINT reports_envelope_ciphertext_length_check CHECK (
+      description_ciphertext IS NULL OR octet_length(description_ciphertext) >= 16
+    );
+  EXCEPTION WHEN duplicate_object THEN NULL;
+  END;
+  BEGIN
+    ALTER TABLE reports ADD CONSTRAINT reports_envelope_algorithm_check CHECK (
+      description_ciphertext IS NULL OR encryption_algorithm_version = 'aes-256-gcm-v1'
+    );
+  EXCEPTION WHEN duplicate_object THEN NULL;
+  END;
+  BEGIN
+    ALTER TABLE reports ADD CONSTRAINT reports_envelope_aad_check CHECK (
+      description_ciphertext IS NULL OR aad_version = 'aad-v1'
+    );
+  EXCEPTION WHEN duplicate_object THEN NULL;
+  END;
+  BEGIN
+    ALTER TABLE reports ADD CONSTRAINT reports_envelope_key_version_check CHECK (
+      description_ciphertext IS NULL OR length(btrim(encryption_key_version)) > 0
+    );
+  EXCEPTION WHEN duplicate_object THEN NULL;
+  END;
+END $$;
 
 CREATE UNIQUE INDEX IF NOT EXISTS reports_pending_reporter_target_unique
   ON reports (reporter_user_id, target_type, target_user_id)
@@ -82,7 +137,31 @@ REVOKE ALL ON reports, report_idempotency FROM heisei_block_writer;
 
 REVOKE ALL ON reports, report_idempotency, audit_logs FROM heisei_report_writer;
 GRANT SELECT, INSERT ON reports, report_idempotency TO heisei_report_writer;
+GRANT UPDATE (last_used_at, expires_at) ON report_idempotency TO heisei_report_writer;
 GRANT INSERT ON audit_logs TO heisei_report_writer;
+
+-- The writer has only column-scoped UPDATE privilege. This narrow invoker
+-- function is owned by the writer role and can only refresh the two TTL columns for the
+-- caller's actor-bound row. Fingerprints, key versions, report references,
+-- and actor ownership are not writable through this boundary.
+CREATE OR REPLACE FUNCTION report_idempotency_touch(p_id uuid)
+RETURNS boolean
+LANGUAGE plpgsql
+SECURITY INVOKER
+SET search_path = pg_catalog, public
+AS $$
+BEGIN
+  UPDATE report_idempotency
+  SET last_used_at = now(),
+      expires_at = now() + interval '30 days'
+  WHERE id = p_id
+    AND reporter_user_id::text = current_setting('app.user_id', true);
+  RETURN FOUND;
+END;
+$$;
+ALTER FUNCTION report_idempotency_touch(uuid) OWNER TO heisei_report_writer;
+REVOKE ALL ON FUNCTION report_idempotency_touch(uuid) FROM PUBLIC;
+GRANT EXECUTE ON FUNCTION report_idempotency_touch(uuid) TO heisei_report_writer;
 
 DROP POLICY IF EXISTS reports_writer_select ON reports;
 CREATE POLICY reports_writer_select ON reports FOR SELECT
@@ -101,6 +180,14 @@ DROP POLICY IF EXISTS report_idempotency_writer_insert ON report_idempotency;
 CREATE POLICY report_idempotency_writer_insert ON report_idempotency FOR INSERT
   WITH CHECK (current_user = 'heisei_report_writer'
     AND reporter_user_id::text = current_setting('app.user_id', true));
+DROP POLICY IF EXISTS report_idempotency_writer_update ON report_idempotency;
+CREATE POLICY report_idempotency_writer_update ON report_idempotency FOR UPDATE
+  USING (current_user = 'heisei_report_writer'
+    AND reporter_user_id::text = current_setting('app.user_id', true))
+  WITH CHECK (current_user = 'heisei_report_writer'
+    AND reporter_user_id::text = current_setting('app.user_id', true)
+    AND expires_at >= last_used_at
+    AND expires_at <= last_used_at + interval '30 days');
 
 -- The writer may append only the report.create event for its verified actor.
 -- Atomic report+audit execution remains the responsibility of the future
@@ -115,5 +202,5 @@ CREATE POLICY audit_logs_report_writer_insert ON audit_logs FOR INSERT
     AND request_id IS NOT NULL
     AND length(request_id) BETWEEN 1 AND 128);
 
--- No UPDATE/DELETE policies are created for reports, report_idempotency, or
--- audit_logs. The writer cannot mutate existing data or bypass append-only audit.
+-- No UPDATE/DELETE policies are created for reports or audit_logs. The writer
+-- cannot mutate report identity/fingerprint fields or bypass append-only audit.
