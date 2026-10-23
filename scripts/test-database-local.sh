@@ -180,6 +180,35 @@ SQL
 test "$identity_subject_count" = 1
 echo "PASS: identity writer subject lookup is role-scoped"
 
+identity_evidence_count="$(run_as heisei_identity_login -At <<'SQL'
+SET ROLE heisei_identity_writer;
+SET app.auth_subject = 'r2-subject-1';
+SELECT count(*) FROM user_verifications WHERE user_id IN (
+  SELECT id FROM profiles WHERE auth_subject = current_setting('app.auth_subject')
+);
+SQL
+)"
+test "$identity_evidence_count" = 1
+echo "PASS: subject-scoped verification evidence is visible to identity writer"
+
+identity_other_subject="$(run_as heisei_identity_login -At <<'SQL'
+SET ROLE heisei_identity_writer;
+SET app.auth_subject = 'missing-subject';
+SELECT count(*) FROM user_verifications WHERE user_id = '00000000-0000-4000-8000-000000000001';
+SQL
+)"
+test "$identity_other_subject" = 0
+echo "PASS: missing subject cannot read another user's verification evidence"
+
+app_subject_only="$(run_as heisei_app_login -At <<'SQL'
+SET ROLE heisei_app;
+SET app.auth_subject = 'r2-subject-1';
+SELECT count(*) FROM profiles WHERE auth_subject = current_setting('app.auth_subject');
+SQL
+)"
+test "$app_subject_only" = 0
+echo "PASS: normal app role cannot claim identity writer's subject lookup"
+
 run_as heisei_identity_login <<'SQL' >/dev/null
 SET ROLE heisei_identity_writer;
 SET app.user_id = '00000000-0000-4000-8000-000000000001';

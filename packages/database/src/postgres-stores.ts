@@ -80,10 +80,6 @@ function isVerificationStatus(value: string): value is VerificationStatus {
   return value === 'pending' || value === 'verified' || value === 'rejected' || value === 'revoked';
 }
 
-function asBoolean(value: boolean): boolean {
-  return value === true;
-}
-
 /** Loads an identity only through the trusted, RLS-scoped PostgreSQL boundary. */
 export class PostgresIdentityRecordStore implements IdentityRecordStore {
   constructor(private readonly executor: TrustedPostgresExecutor) {}
@@ -126,10 +122,15 @@ export class PostgresBlockRelationStore implements BlockRelationStore {
     return this.executor.withUserId(actorUserId, async (query) => {
       const result = await query.query<BlockRow>(blockSql, [actorUserId, targetUserId]);
       const row = result.rows[0];
-      if (!row) return null;
+      // Malformed or incomplete DB rows must never be interpreted as "no block".
+      if (
+        !row ||
+        typeof row.blocked_by_actor !== 'boolean' ||
+        typeof row.blocked_by_target !== 'boolean'
+      ) return null;
       return {
-        blockedByActor: asBoolean(row.blocked_by_actor),
-        blockedByTarget: asBoolean(row.blocked_by_target),
+        blockedByActor: row.blocked_by_actor,
+        blockedByTarget: row.blocked_by_target,
       };
     });
   }

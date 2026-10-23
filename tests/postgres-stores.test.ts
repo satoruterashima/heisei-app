@@ -92,6 +92,40 @@ describe('PostgreSQL identity and block stores', () => {
     expect(await store.findBetween('not-a-uuid', userId)).toBeNull();
   });
 
+  it('fails closed if a block query returns missing or malformed boolean columns', async () => {
+    const target = '00000000-0000-4000-8000-000000000002';
+    for (const row of [[], [{ blocked_by_actor: false }], [{ blocked_by_actor: 0, blocked_by_target: false }]]) {
+      const store = new PostgresBlockRelationStore(executorFor(row));
+      await expect(store.findBetween(userId, target)).resolves.toBeNull();
+    }
+  });
+
+  it('binds actor, target and subject as SQL parameters', async () => {
+    const seen: Array<{ sql: string; values: readonly unknown[] }> = [];
+    const exec: TrustedPostgresExecutor = {
+      withAuthSubject: async (_s, callback) => callback({
+        query: async <Row extends Record<string, unknown>>(sql: string, values: readonly unknown[]) => {
+          seen.push({ sql, values });
+          return { rows: [identityRow] as unknown as readonly Row[] };
+        },
+      }),
+      withUserId: async (_s, callback) => callback({
+        query: async <Row extends Record<string, unknown>>(sql: string, values: readonly unknown[]) => {
+          seen.push({ sql, values });
+          return { rows: [{ blocked_by_actor: false, blocked_by_target: false }] as unknown as readonly Row[] };
+        },
+      }),
+    };
+    const target = '00000000-0000-4000-8000-000000000002';
+    await new PostgresIdentityRecordStore(exec).findByAuthSubject(subject);
+    await new PostgresBlockRelationStore(exec).findBetween(userId, target);
+    expect(seen).toHaveLength(2);
+    expect(seen[0].sql).toContain('$1');
+    expect(seen[0].values).toEqual([subject]);
+    expect(seen[1].sql).toContain('$2');
+    expect(seen[1].values).toEqual([userId, target]);
+  });
+
   it('integrates a real JWT with the session API and the identity store', async () => {
     const { verifier, token } = await signedToken();
     const app = createApiAppWithDatabase({ verifier, executor: executorFor([identityRow]) });
