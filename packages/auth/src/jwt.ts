@@ -40,7 +40,7 @@ function decodeBase64Url(value: string): Uint8Array {
   const binary = atob(padded);
   // Reject base64url encodings that differ only in unused padding bits.
   // JWT segments must have a canonical byte representation.
-  const canonical = btoa(binary).replace(/\\+/g, '-').replace(/\\//g, '_').replace(/=+$/u, '');
+  const canonical = btoa(binary).split('+').join('-').split('/').join('_').replace(/=+$/u, '');
   if (canonical !== value) throw new JwtVerificationError();
   return Uint8Array.from(binary, (character) => character.charCodeAt(0));
 }
