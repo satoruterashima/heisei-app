@@ -27,6 +27,19 @@ function validatedPayload() {
   return result.value;
 }
 
+function decodeBase64Url(value: string): Uint8Array {
+  const base64 = value.replace(/-/gu, '+').replace(/_/gu, '/');
+  const padded = `${base64}${'='.repeat((4 - (base64.length % 4)) % 4)}`;
+  const binary = atob(padded);
+  return Uint8Array.from(binary, (character) => character.charCodeAt(0));
+}
+
+function encodeBase64Url(value: Uint8Array): string {
+  let binary = '';
+  for (const byte of value) binary += String.fromCharCode(byte);
+  return btoa(binary).replace(/\+/gu, '-').replace(/\//gu, '_').replace(/=+$/u, '');
+}
+
 describe('report payload validator', () => {
   it('accepts all approved categories and normalizes UUID/description', () => {
     for (const category of ['harassment', 'spam', 'impersonation', 'inappropriate_content', 'fraud', 'other'] as const) {
@@ -95,6 +108,14 @@ describe('idempotency validation and fingerprint', () => {
     expect(first.payloadFingerprint).not.toBe(rotated.payloadFingerprint);
     expect(fingerprintsEqual(first, otherReporter)).toBe(false);
   });
+
+  it('rechecks a stored idempotency record with its original key version after rotation', async () => {
+    const provider = await FixtureReportKeyProvider.create(['hmac-v1', 'hmac-v2']);
+    const storedRecord = await createReportFingerprint({ reporterUserId: actor, idempotencyKey: key, payload: validatedPayload(), keyVersion: 'hmac-v1' }, provider);
+    const recheckedRecord = await createReportFingerprint({ reporterUserId: actor, idempotencyKey: key, payload: validatedPayload(), keyVersion: storedRecord.keyVersion }, provider);
+    expect(recheckedRecord.keyVersion).toBe('hmac-v1');
+    expect(fingerprintsEqual(storedRecord, recheckedRecord)).toBe(true);
+  });
 });
 
 describe('report description AES-256-GCM', () => {
@@ -112,15 +133,22 @@ describe('report description AES-256-GCM', () => {
     const provider = await FixtureReportKeyProvider.create(['enc-v1']);
     const context = { reportId, reporterUserId: actor, targetUserId: target };
     const encrypted = await encryptReportDescription('do not leak this', context, 'enc-v1', provider);
-    const tamperedCiphertext = { ...encrypted, ciphertext: `${encrypted.ciphertext.slice(0, -1)}${encrypted.ciphertext.endsWith('A') ? 'B' : 'A'}` };
-    const tamperedNonce = { ...encrypted, nonce: `${encrypted.nonce.slice(0, -1)}${encrypted.nonce.endsWith('A') ? 'B' : 'A'}` };
+    const ciphertextBytes = decodeBase64Url(encrypted.ciphertext);
+    ciphertextBytes[Math.floor(ciphertextBytes.length / 2)] ^= 0x01;
+    const tamperedCiphertext = { ...encrypted, ciphertext: encodeBase64Url(ciphertextBytes) };
+    const nonceBytes = decodeBase64Url(encrypted.nonce);
+    nonceBytes[0] ^= 0x01;
+    const tamperedNonce = { ...encrypted, nonce: encodeBase64Url(nonceBytes) };
     await expect(decryptReportDescription(tamperedCiphertext, context, provider)).rejects.toBeInstanceOf(ReportCryptoError);
     await expect(decryptReportDescription(tamperedNonce, context, provider)).rejects.toBeInstanceOf(ReportCryptoError);
     await expect(decryptReportDescription(encrypted, { ...context, targetUserId: actor }, provider)).rejects.toBeInstanceOf(ReportCryptoError);
     try {
       await decryptReportDescription(tamperedCiphertext, context, provider);
     } catch (error) {
+      expect(error).toBeInstanceOf(ReportCryptoError);
+      expect(String(error)).toBe('ReportCryptoError: report cryptographic operation failed');
       expect(String(error)).not.toContain('do not leak this');
+      expect(String(error)).not.toMatch(/enc-v1|AES|CryptoKey|OperationError|nonce|ciphertext/iu);
     }
   });
 
