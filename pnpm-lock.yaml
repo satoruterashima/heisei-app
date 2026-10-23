@@ -17,6 +17,9 @@ importers:
       eslint:
         specifier: 9.39.1
         version: 9.39.1(supports-color@8.1.1)
+      hono:
+        specifier: ^4.4.0
+        version: 4.13.1
       turbo:
         specifier: ^2.0.0
         version: 2.10.8
@@ -32,6 +35,9 @@ importers:
 
   apps/api:
     dependencies:
+      '@heisei/auth':
+        specifier: workspace:*
+        version: link:../../packages/auth
       '@heisei/database':
         specifier: workspace:*
         version: link:../../packages/database
@@ -102,6 +108,16 @@ importers:
         version: 5.9.3
 
   packages/api-client:
+    dependencies:
+      hono:
+        specifier: ^4.4.0
+        version: 4.13.1
+    devDependencies:
+      typescript:
+        specifier: ^5.4.5
+        version: 5.9.3
+
+  packages/auth:
     dependencies:
       hono:
         specifier: ^4.4.0
