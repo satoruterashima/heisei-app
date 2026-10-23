@@ -68,7 +68,12 @@ export function authMiddleware(options: AuthMiddlewareOptions): MiddlewareHandle
 export function optionalAuthMiddleware(options: AuthMiddlewareOptions): MiddlewareHandler<{ Variables: AuthVariables }> {
   return async (c, next) => {
     const token = bearerToken(c.req.raw);
-    if (!token) return next();
+    // Only a completely absent Authorization header may be treated as L0.
+    // A malformed or unsupported scheme is an authentication error.
+    if (!token) {
+      if (c.req.raw.headers.has('authorization')) return unauthorized(c, 'Invalid authorization header');
+      return next();
+    }
     try {
       const claims = await options.verifier.verify(token);
       if (!claims || typeof claims.sub !== 'string' || !claims.sub.trim() || !Number.isFinite(claims.exp) || claims.exp <= Math.floor(Date.now() / 1000)) {
