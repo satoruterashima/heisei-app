@@ -15,6 +15,7 @@ export const profiles = pgTable('profiles', {
   membership: varchar('membership', { length: 20 }).default('free').notNull(),
   rolesJson: text('roles_json').default('["member"]').notNull(),
   accountStatus: varchar('account_status', { length: 20 }).default('active').notNull(),
+  profileVisibility: varchar('profile_visibility', { length: 20 }).default('private').notNull(),
   isAgeVerified: boolean('is_age_verified').default(false).notNull(),
   createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
   updatedAt: timestamp('updated_at', { withTimezone: true }).defaultNow().notNull(),
@@ -23,6 +24,7 @@ export const profiles = pgTable('profiles', {
   authLevelCheck: check('profiles_auth_level_check', sql`${table.authLevel} between 0 and 4`),
   membershipCheck: check('profiles_membership_check', sql`${table.membership} in ('free', 'paid', 'official')`),
   accountStatusCheck: check('profiles_account_status_check', sql`${table.accountStatus} in ('active', 'ai_suspended', 'suspended', 'banned')`),
+  profileVisibilityCheck: check('profiles_profile_visibility_check', sql`${table.profileVisibility} in ('private', 'public')`),
 }));
 
 // Authentication evidence. Provider identifiers are stored only as masked/hash references.
