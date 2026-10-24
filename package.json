@@ -8,10 +8,12 @@
     "typecheck": "turbo run typecheck && tsc -p tsconfig.quality.json",
     "setup:cloud": "bash scripts/setup-cloud.sh",
     "test": "vitest run",
+    "test:do": "vitest run --config vitest.do.config.mts",
     "build:check": "WRANGLER_SEND_METRICS=false WRANGLER_LOG_PATH=.wrangler/logs pnpm --config.verifyDepsBeforeRun=warn --filter @heisei/api exec wrangler deploy --dry-run --outdir .wrangler/build"
   },
   "packageManager": "pnpm@11.20.0",
   "devDependencies": {
+    "@cloudflare/vitest-pool-workers": "0.4.31",
     "@eslint/js": "9.39.1",
     "@types/node": "20.19.43",
     "eslint": "9.39.1",
@@ -19,7 +21,7 @@
     "turbo": "^2.0.0",
     "typescript": "^5.4.5",
     "typescript-eslint": "8.46.1",
-    "vitest": "1.6.1"
+    "vitest": "1.5.3"
   },
   "engines": {
     "node": ">=22.13.0"
