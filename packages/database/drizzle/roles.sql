@@ -67,6 +67,16 @@ ALTER ROLE heisei_report_reconciler NOSUPERUSER NOBYPASSRLS NOLOGIN;
 ALTER ROLE heisei_report_ttl_writer NOSUPERUSER NOBYPASSRLS NOLOGIN;
 ALTER ROLE heisei_report_staff_reader NOSUPERUSER NOBYPASSRLS NOLOGIN;
 
+GRANT SELECT (id, auth_level, roles_json, account_status) ON profiles TO heisei_report_staff_reader;
+
+DO $$
+BEGIN
+  IF to_regclass('public.report_staff_assignments') IS NOT NULL THEN
+    EXECUTE 'REVOKE ALL ON report_staff_assignments FROM PUBLIC, heisei_report_staff_reader';
+    EXECUTE 'GRANT SELECT (report_id, staff_user_id, assigned_at, revoked_at) ON report_staff_assignments TO heisei_report_staff_reader';
+  END IF;
+END $$;
+
 REVOKE ALL ON profiles, user_verifications, user_settings, blocks, audit_logs FROM heisei_app;
 GRANT SELECT ON profiles, user_verifications, user_settings, blocks TO heisei_app;
 GRANT UPDATE (display_name, bio, favorite_genres, avatar_url, updated_at) ON profiles TO heisei_app;

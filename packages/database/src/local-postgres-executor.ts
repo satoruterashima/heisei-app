@@ -122,9 +122,9 @@ export class LocalTrustedPostgresExecutor implements TrustedPostgresExecutor {
     return this.withTransaction(this.roles.reportReconciler, [['app.user_id', userId]], operation);
   }
 
-  async withReportStaff<T>(staffUserId: string, targetUserId: string, operation: (query: PostgresQueryExecutor) => Promise<T>): Promise<T> {
-    if (!this.isUuid(staffUserId) || !this.isUuid(targetUserId)) throw new Error('invalid staff context');
-    return this.withTransaction(this.roles.reportStaff, [['app.user_id', staffUserId], ['app.staff_scope', targetUserId]], operation);
+  async withReportStaff<T>(staffUserId: string, operation: (query: PostgresQueryExecutor) => Promise<T>): Promise<T> {
+    if (!this.isUuid(staffUserId)) throw new Error('invalid staff context');
+    return this.withTransaction(this.roles.reportStaff, [['app.user_id', staffUserId]], operation);
   }
 
   async close(): Promise<void> {

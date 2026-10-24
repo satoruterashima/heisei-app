@@ -887,47 +887,89 @@ psql_file < "$repo_root/packages/database/drizzle/0004_report_repository_g4b2.sq
 psql_file < "$repo_root/packages/database/drizzle/roles.sql" >/dev/null
 psql_file < "$repo_root/packages/database/drizzle/0005_report_operations_local.sql" >/dev/null
 psql_file < "$repo_root/packages/database/drizzle/roles.sql" >/dev/null
+psql_file < "$repo_root/packages/database/drizzle/0006_report_case_assignments_local.sql" >/dev/null
+psql_file < "$repo_root/packages/database/drizzle/roles.sql" >/dev/null
 psql_file < "$repo_root/packages/database/drizzle/0004_report_repository_g4b2.sql" >/dev/null
 psql_file < "$repo_root/packages/database/drizzle/roles.sql" >/dev/null
 psql_file < "$repo_root/packages/database/drizzle/0005_report_operations_local.sql" >/dev/null
+psql_file < "$repo_root/packages/database/drizzle/roles.sql" >/dev/null
+psql_file < "$repo_root/packages/database/drizzle/0006_report_case_assignments_local.sql" >/dev/null
 psql_file < "$repo_root/packages/database/drizzle/roles.sql" >/dev/null
 legacy_atomic_execute="$(psql_file -Atqc "SELECT has_function_privilege('heisei_report_writer', 'public.report_create_atomic(uuid,character varying,character varying,character varying)', 'EXECUTE')")"
 repository_atomic_execute="$(psql_file -Atqc "SELECT has_function_privilege('heisei_report_writer', 'public.report_create_atomic_v2(uuid,character varying,character varying,character varying,uuid,jsonb,text,text,text,text,text,text,text)', 'EXECUTE')")"
 test "$legacy_atomic_execute" = f
 test "$repository_atomic_execute" = t
 echo "PASS: G4-B2 migration disables legacy save path and keeps repository function only"
+assigned_report_id="$(psql_file -Atqc "SELECT id FROM reports WHERE status = 'pending' ORDER BY created_at ASC LIMIT 1")"
+test -n "$assigned_report_id"
+psql_file <<SQL >/dev/null
+UPDATE profiles SET auth_level = 3, roles_json = '["admin"]'
+WHERE id = '00000000-0000-4000-8000-000000000001';
+INSERT INTO report_staff_assignments (report_id, staff_user_id)
+VALUES ('$assigned_report_id', '00000000-0000-4000-8000-000000000001');
+SQL
+echo "PASS: fixture assignment is created through an isolated privileged fixture path"
 staff_report_rows="$(run_as heisei_report_staff_login -At <<'SQL'
 SET ROLE heisei_report_staff_reader;
 SET app.user_id = '00000000-0000-4000-8000-000000000001';
-SET app.staff_scope = '00000000-0000-4000-8000-000000000002';
-SELECT count(*) FROM reports WHERE target_user_id = current_setting('app.staff_scope')::uuid;
+SELECT count(*) FROM reports;
 SQL
 )"
-[[ "$staff_report_rows" =~ ^[0-9]+$ ]]
-echo "PASS: staff reader sees only assigned target metadata"
+test "$staff_report_rows" = 1
+unassigned_report_rows="$(run_as heisei_report_staff_login -At <<'SQL'
+SET ROLE heisei_report_staff_reader;
+SET app.user_id = '00000000-0000-4000-8000-000000000003';
+SELECT count(*) FROM reports;
+SQL
+)"
+test "$unassigned_report_rows" = 0
+echo "PASS: staff reader sees only assigned report IDs and another staff member sees none"
 expect_failure "staff reader encrypted column access" run_as heisei_report_staff_login <<'SQL'
 SET ROLE heisei_report_staff_reader;
 SET app.user_id = '00000000-0000-4000-8000-000000000001';
-SET app.staff_scope = '00000000-0000-4000-8000-000000000002';
 SELECT description_ciphertext FROM reports;
 SQL
 expect_failure "staff reader audit forgery" run_as heisei_report_staff_login <<'SQL'
 SET ROLE heisei_report_staff_reader;
 SET app.user_id = '00000000-0000-4000-8000-000000000001';
-SET app.staff_scope = '00000000-0000-4000-8000-000000000002';
 INSERT INTO audit_logs (actor_user_id, target_user_id, action, reason, request_id, rule_version)
-VALUES (current_setting('app.user_id')::uuid, current_setting('app.staff_scope')::uuid, 'report.delete', 'metadata-only', 'ops-forged', '003i-ops-v1');
+VALUES (current_setting('app.user_id')::uuid, '00000000-0000-4000-8000-000000000002', 'report.delete', 'metadata-only', 'ops-forged', '003i-ops-v1');
 SQL
-run_as heisei_report_staff_login <<'SQL' >/dev/null
+run_as heisei_report_staff_login <<SQL >/dev/null
 SET ROLE heisei_report_staff_reader;
 SET app.user_id = '00000000-0000-4000-8000-000000000001';
-SET app.staff_scope = '00000000-0000-4000-8000-000000000002';
-INSERT INTO audit_logs (actor_user_id, target_user_id, action, reason, request_id, rule_version)
-VALUES (current_setting('app.user_id')::uuid, current_setting('app.staff_scope')::uuid, 'report.staff.view', 'metadata-only', 'ops-view', '003i-ops-v1');
+INSERT INTO audit_logs (report_id, actor_user_id, target_user_id, action, reason, request_id, rule_version)
+VALUES ('$assigned_report_id', current_setting('app.user_id')::uuid, (SELECT target_user_id FROM reports WHERE id = '$assigned_report_id'), 'report.staff.view', 'metadata-only', 'ops-view', '003i-ops-v1');
 SQL
 ops_audit_count="$(psql_file -Atqc "SELECT count(*) FROM audit_logs WHERE action = 'report.staff.view' AND request_id = 'ops-view'")"
 test "$ops_audit_count" = 1
 echo "PASS: staff metadata access is audited and non-disclosing"
+psql_file <<SQL >/dev/null
+UPDATE report_staff_assignments SET revoked_at = now()
+WHERE report_id = '$assigned_report_id' AND staff_user_id = '00000000-0000-4000-8000-000000000001';
+SQL
+revoked_report_rows="$(run_as heisei_report_staff_login -At <<'SQL'
+SET ROLE heisei_report_staff_reader;
+SET app.user_id = '00000000-0000-4000-8000-000000000001';
+SELECT count(*) FROM reports;
+SQL
+)"
+test "$revoked_report_rows" = 0
+echo "PASS: revoked assignment immediately loses case access"
+psql_file <<SQL >/dev/null
+UPDATE report_staff_assignments SET revoked_at = NULL
+WHERE report_id = '$assigned_report_id' AND staff_user_id = '00000000-0000-4000-8000-000000000001';
+UPDATE profiles SET account_status = 'suspended'
+WHERE id = '00000000-0000-4000-8000-000000000001';
+SQL
+status_revoked_rows="$(run_as heisei_report_staff_login -At <<'SQL'
+SET ROLE heisei_report_staff_reader;
+SET app.user_id = '00000000-0000-4000-8000-000000000001';
+SELECT count(*) FROM reports;
+SQL
+)"
+test "$status_revoked_rows" = 0
+echo "PASS: inactive staff identity loses case access"
 staff_role_attributes="$(psql_file -Atqc "SELECT rolsuper::int || ':' || rolbypassrls::int || ':' || rolcanlogin::int FROM pg_roles WHERE rolname = 'heisei_report_staff_reader'")"
 staff_role_memberships="$(psql_file -Atqc "SELECT count(*) FROM pg_auth_members m JOIN pg_roles r ON r.oid = m.member WHERE r.rolname = 'heisei_report_staff_reader'")"
 test "$staff_role_attributes" = '0:0:0'

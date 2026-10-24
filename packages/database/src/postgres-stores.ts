@@ -24,7 +24,8 @@ export interface TrustedPostgresExecutor {
   withReportWriter?<T>(userId: string, targetUserId: string, operation: (query: PostgresQueryExecutor) => Promise<T>, authSubject?: string): Promise<T>;
   /** Read-only actor-bound reconciliation boundary; it cannot write reports or audit rows. */
   withReportReconciler?<T>(userId: string, operation: (query: PostgresQueryExecutor) => Promise<T>): Promise<T>;
-  withReportStaff?<T>(staffUserId: string, targetUserId: string, operation: (query: PostgresQueryExecutor) => Promise<T>): Promise<T>;
+  /** Case-scoped reader boundary. The database derives visible reports from assignments. */
+  withReportStaff?<T>(staffUserId: string, operation: (query: PostgresQueryExecutor) => Promise<T>): Promise<T>;
   withVisibilityReader?<T>(actorUserId: string, targetUserId: string, operation: (query: PostgresQueryExecutor) => Promise<T>): Promise<T>;
 }
 
