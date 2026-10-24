@@ -24,7 +24,7 @@ export type QuotaConfig = {
   stateRetentionMs: number;
 };
 
-export type ReservationStatus = 'reserved' | 'committed' | 'cancelled' | 'expired' | 'uncertain';
+export type ReservationStatus = 'reserved' | 'in_flight' | 'committed' | 'cancelled' | 'expired' | 'uncertain';
 
 export type QuotaReservation = {
   reservationId: string;
@@ -35,22 +35,26 @@ export type QuotaReservation = {
 };
 
 export type QuotaState = {
-  version: 1;
+  version: 2;
   actorId: string;
   shortWindowStartedAt: number;
   shortRequestCount: number;
   longWindowStartedAt: number;
   longRequestCount: number;
   admissionWindowStartedAt: number;
-  admissionCount: number;
+  confirmedAdmissionCount: number;
+  reservedAdmissionCount: number;
+  uncertainAdmissionCount: number;
   reservations: Record<string, QuotaReservation>;
   updatedAt: number;
 };
 
 export type RequestGateResult = 'allowed' | 'rate_limited';
 export type ReservationResult = 'reserved' | 'replayed' | 'idempotency_conflict' | 'rate_limited';
+export type BeginSaveResult = 'started' | 'replayed' | 'uncertain' | 'unavailable';
 export type ReportOutcome = 'accepted' | 'replayed' | 'duplicate' | 'denied' | 'idempotency_conflict' | 'unavailable' | 'unknown_commit';
 export type FinalizeResult = 'committed' | 'cancelled' | 'uncertain' | 'replayed' | 'idempotency_conflict' | 'unavailable';
+export type ReconciliationObservation = 'stored' | 'not_stored' | 'unavailable' | 'unknown' | 'key_missing';
 
 export type QuotaStep<T> = { state: QuotaState; result: T };
 
@@ -102,14 +106,16 @@ export class QuotaEngine {
     const actor = normalizeActorId(actorId);
     assertTime(now);
     return {
-      version: 1,
+      version: 2,
       actorId: actor,
       shortWindowStartedAt: now,
       shortRequestCount: 0,
       longWindowStartedAt: now,
       longRequestCount: 0,
       admissionWindowStartedAt: now,
-      admissionCount: 0,
+      confirmedAdmissionCount: 0,
+      reservedAdmissionCount: 0,
+      uncertainAdmissionCount: 0,
       reservations: {},
       updatedAt: now,
     };
@@ -139,15 +145,15 @@ export class QuotaEngine {
       if (existing.status === 'reserved' || existing.status === 'uncertain') return { state, result: existing.status === 'uncertain' ? 'idempotency_conflict' : 'replayed' };
       return { state, result: 'idempotency_conflict' };
     }
-    const admission = resetWindow(state.admissionWindowStartedAt, state.admissionCount, now, this.config.admissionWindowMs);
+    const admission = resetWindow(state.admissionWindowStartedAt, state.confirmedAdmissionCount, now, this.config.admissionWindowMs);
     state.admissionWindowStartedAt = admission.startedAt;
-    state.admissionCount = admission.count;
-    const activeReservations = Object.values(state.reservations).filter((value) => value.status === 'reserved' || value.status === 'uncertain').length;
-    if (activeReservations >= this.config.maxActiveReservations || admission.count >= this.config.newAdmissionLimit) {
+    state.confirmedAdmissionCount = admission.count;
+    const activeReservations = state.reservedAdmissionCount + state.uncertainAdmissionCount;
+    if (activeReservations >= this.config.maxActiveReservations || admission.count + activeReservations >= this.config.newAdmissionLimit) {
       state.updatedAt = now;
       return { state, result: 'rate_limited' };
     }
-    state.admissionCount += 1;
+    state.reservedAdmissionCount += 1;
     state.reservations[reservationId] = {
       reservationId,
       actorId: state.actorId,
@@ -159,6 +165,22 @@ export class QuotaEngine {
     return { state, result: 'reserved' };
   }
 
+  beginSave(input: QuotaState, reservationId: string, now: number): QuotaStep<BeginSaveResult> {
+    assertTime(now);
+    assertReservationId(reservationId);
+    const state = cloneState(input);
+    const reservation = state.reservations[reservationId];
+    if (!reservation || reservation.actorId !== state.actorId) return { state, result: 'unavailable' };
+    if (reservation.status === 'reserved') {
+      reservation.status = 'in_flight';
+      state.updatedAt = now;
+      return { state, result: 'started' };
+    }
+    if (reservation.status === 'in_flight') return { state, result: 'replayed' };
+    if (reservation.status === 'uncertain') return { state, result: 'uncertain' };
+    return { state, result: 'unavailable' };
+  }
+
   finalize(input: QuotaState, reservationId: string, outcome: ReportOutcome, now: number): QuotaStep<FinalizeResult> {
     assertTime(now);
     assertReservationId(reservationId);
@@ -167,21 +189,69 @@ export class QuotaEngine {
     if (!reservation || reservation.actorId !== state.actorId) return { state, result: 'unavailable' };
     if (reservation.status === 'committed' && outcome === 'accepted') return { state, result: 'replayed' };
     if (reservation.status === 'uncertain') return { state, result: 'uncertain' };
-    if (reservation.status !== 'reserved') return { state, result: 'idempotency_conflict' };
+    if (reservation.status !== 'reserved' && reservation.status !== 'in_flight') return { state, result: 'idempotency_conflict' };
     if (outcome === 'unknown_commit') {
       reservation.status = 'uncertain';
+      state.reservedAdmissionCount = Math.max(0, state.reservedAdmissionCount - 1);
+      state.uncertainAdmissionCount += 1;
       state.updatedAt = now;
       return { state, result: 'uncertain' };
     }
     if (outcome === 'accepted') {
+      if (reservation.status !== 'in_flight') return { state, result: 'unavailable' };
+      reservation.status = 'committed';
+      state.reservedAdmissionCount = Math.max(0, state.reservedAdmissionCount - 1);
+      const admission = resetWindow(state.admissionWindowStartedAt, state.confirmedAdmissionCount, now, this.config.admissionWindowMs);
+      state.admissionWindowStartedAt = admission.startedAt;
+      state.confirmedAdmissionCount = admission.count + 1;
+      state.updatedAt = now;
+      return { state, result: 'committed' };
+    }
+    if (reservation.status === 'in_flight') {
+      reservation.status = 'uncertain';
+      state.reservedAdmissionCount = Math.max(0, state.reservedAdmissionCount - 1);
+      state.uncertainAdmissionCount += 1;
+      state.updatedAt = now;
+      return { state, result: 'uncertain' };
+    }
+    reservation.status = 'cancelled';
+    state.reservedAdmissionCount = Math.max(0, state.reservedAdmissionCount - 1);
+    state.updatedAt = now;
+    return { state, result: 'cancelled' };
+  }
+
+  reconcile(input: QuotaState, reservationId: string, observation: ReconciliationObservation, now: number): QuotaStep<'committed' | 'cancelled' | 'uncertain' | 'replayed'> {
+    assertTime(now);
+    assertReservationId(reservationId);
+    const state = cloneState(input);
+    const reservation = state.reservations[reservationId];
+    if (!reservation || reservation.actorId !== state.actorId) return { state, result: 'uncertain' };
+    if (reservation.status === 'committed') return { state, result: 'replayed' };
+    if (reservation.status === 'cancelled' || reservation.status === 'expired') return { state, result: 'cancelled' };
+    if (observation === 'stored') {
+      if (reservation.status === 'uncertain') state.uncertainAdmissionCount = Math.max(0, state.uncertainAdmissionCount - 1);
+      else state.reservedAdmissionCount = Math.max(0, state.reservedAdmissionCount - 1);
+      const admission = resetWindow(state.admissionWindowStartedAt, state.confirmedAdmissionCount, now, this.config.admissionWindowMs);
+      state.admissionWindowStartedAt = admission.startedAt;
+      state.confirmedAdmissionCount = admission.count + 1;
       reservation.status = 'committed';
       state.updatedAt = now;
       return { state, result: 'committed' };
     }
-    reservation.status = 'cancelled';
-    state.admissionCount = Math.max(0, state.admissionCount - 1);
+    if (observation === 'not_stored') {
+      if (reservation.status === 'uncertain') state.uncertainAdmissionCount = Math.max(0, state.uncertainAdmissionCount - 1);
+      else state.reservedAdmissionCount = Math.max(0, state.reservedAdmissionCount - 1);
+      reservation.status = 'cancelled';
+      state.updatedAt = now;
+      return { state, result: 'cancelled' };
+    }
+    if (reservation.status === 'reserved' || reservation.status === 'in_flight') {
+      state.reservedAdmissionCount = Math.max(0, state.reservedAdmissionCount - 1);
+      state.uncertainAdmissionCount += 1;
+    }
+    reservation.status = 'uncertain';
     state.updatedAt = now;
-    return { state, result: 'cancelled' };
+    return { state, result: 'uncertain' };
   }
 
   expireReservations(input: QuotaState, now: number): QuotaStep<'expired' | 'unchanged'> {
@@ -191,7 +261,12 @@ export class QuotaEngine {
     for (const reservation of Object.values(state.reservations)) {
       if (reservation.status === 'reserved' && reservation.expiresAt <= now) {
         reservation.status = 'expired';
-        state.admissionCount = Math.max(0, state.admissionCount - 1);
+        state.reservedAdmissionCount = Math.max(0, state.reservedAdmissionCount - 1);
+        expired = true;
+      } else if (reservation.status === 'in_flight' && reservation.expiresAt <= now) {
+        reservation.status = 'uncertain';
+        state.reservedAdmissionCount = Math.max(0, state.reservedAdmissionCount - 1);
+        state.uncertainAdmissionCount += 1;
         expired = true;
       }
     }
@@ -221,6 +296,14 @@ export class QuotaCoordinator {
     return this.withState(actor, (state, now) => this.engine.finalize(state, reservationId, outcome, now));
   }
 
+  async beginSave(actor: VerifiedQuotaActor, reservationId: QuotaReservationId): Promise<CoordinatorResult<BeginSaveResult>> {
+    return this.withState(actor, (state, now) => this.engine.beginSave(state, reservationId, now));
+  }
+
+  async reconcile(actor: VerifiedQuotaActor, reservationId: QuotaReservationId, observation: ReconciliationObservation): Promise<CoordinatorResult<'committed' | 'cancelled' | 'uncertain' | 'replayed'>> {
+    return this.withState(actor, (state, now) => this.engine.reconcile(state, reservationId, observation, now));
+  }
+
   async expire(actor: VerifiedQuotaActor): Promise<CoordinatorResult<'expired' | 'unchanged'>> {
     return this.withState(actor, (state, now) => this.engine.expireReservations(state, now));
   }
@@ -232,7 +315,7 @@ export class QuotaCoordinator {
         const now = this.clock.now();
         assertTime(now);
         const current = await this.store.load(actorId) ?? this.engine.initialState(actorId, now);
-        if (current.actorId !== actorId || current.version !== 1) return { result: 'unavailable' };
+        if (current.actorId !== actorId || current.version !== 2 || !isValidState(current)) return { result: 'unavailable' };
         const step = transition(current, now);
         await this.store.save(step.state);
         return { result: step.result };
@@ -241,6 +324,14 @@ export class QuotaCoordinator {
       return { result: 'unavailable' };
     }
   }
+}
+
+function isValidState(state: QuotaState): boolean {
+  return Number.isSafeInteger(state.confirmedAdmissionCount) && state.confirmedAdmissionCount >= 0
+    && Number.isSafeInteger(state.reservedAdmissionCount) && state.reservedAdmissionCount >= 0
+    && Number.isSafeInteger(state.uncertainAdmissionCount) && state.uncertainAdmissionCount >= 0
+    && state.reservations !== null && typeof state.reservations === 'object'
+    && Object.values(state.reservations).every((reservation) => reservation.actorId === state.actorId);
 }
 
 /** Local fixture store; production DO storage must provide the same atomic actor turn. */
@@ -273,6 +364,10 @@ export class InMemoryFixtureStore implements QuotaStore {
       release();
       if (this.locks.get(actorId) === current) this.locks.delete(actorId);
     }
+  }
+
+  async seed(state: QuotaState): Promise<void> {
+    this.states.set(state.actorId, cloneState(state));
   }
 }
 

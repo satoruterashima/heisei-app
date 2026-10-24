@@ -6,6 +6,7 @@ import {
   QuotaCoordinator,
   QuotaEngine,
   type QuotaConfig,
+  type QuotaState,
 } from '../packages/domain/src/index.js';
 
 const actor = fixtureQuotaActor('00000000-0000-4000-8000-000000000001');
@@ -61,9 +62,10 @@ describe('QuotaEngine and local coordinator', () => {
     const { coordinator, store } = setup();
     expect(unwrap(await coordinator.reserveAdmission(actor, r1))).toBe('reserved');
     expect(unwrap(await coordinator.reserveAdmission(actor, r1))).toBe('replayed');
+    expect(unwrap(await coordinator.beginSave(actor, r1))).toBe('started');
     expect(unwrap(await coordinator.finalize(actor, r1, 'accepted'))).toBe('committed');
     expect(unwrap(await coordinator.finalize(actor, r1, 'accepted'))).toBe('replayed');
-    expect((await store.load(actor.userId))?.admissionCount).toBe(1);
+    expect((await store.load(actor.userId))?.confirmedAdmissionCount).toBe(1);
   });
 
   it('cancels denied, duplicate, and conflict reservations without consuming quota', async () => {
@@ -71,7 +73,7 @@ describe('QuotaEngine and local coordinator', () => {
     expect(unwrap(await coordinator.reserveAdmission(actor, r1))).toBe('reserved');
     expect(unwrap(await coordinator.finalize(actor, r1, 'duplicate'))).toBe('cancelled');
     expect(unwrap(await coordinator.finalize(actor, r1, 'duplicate'))).toBe('idempotency_conflict');
-    expect((await store.load(actor.userId))?.admissionCount).toBe(0);
+    expect((await store.load(actor.userId))?.reservedAdmissionCount).toBe(0);
     expect(unwrap(await coordinator.reserveAdmission(actor, r2))).toBe('reserved');
     expect(unwrap(await coordinator.finalize(actor, r2, 'denied'))).toBe('cancelled');
     expect(unwrap(await coordinator.reserveAdmission(actor, r3))).toBe('reserved');
@@ -83,7 +85,7 @@ describe('QuotaEngine and local coordinator', () => {
     expect(unwrap(await coordinator.reserveAdmission(actor, r1))).toBe('reserved');
     clock.advance(50);
     expect(unwrap(await coordinator.expire(actor))).toBe('expired');
-    expect((await store.load(actor.userId))?.admissionCount).toBe(0);
+    expect((await store.load(actor.userId))?.reservedAdmissionCount).toBe(0);
     expect(unwrap(await coordinator.reserveAdmission(actor, r2))).toBe('reserved');
   });
 
@@ -95,6 +97,69 @@ describe('QuotaEngine and local coordinator', () => {
     expect(unwrap(await coordinator.expire(actor))).toBe('unchanged');
     expect(unwrap(await coordinator.reserveAdmission(actor, r1))).toBe('idempotency_conflict');
     expect((await store.load(actor.userId))?.reservations[r1]?.status).toBe('uncertain');
+  });
+
+  it('moves a reservation to in_flight before storage and never expires it into free capacity', async () => {
+    const { clock, coordinator, store } = setup();
+    expect(unwrap(await coordinator.reserveAdmission(actor, r1))).toBe('reserved');
+    expect(unwrap(await coordinator.beginSave(actor, r1))).toBe('started');
+    clock.advance(50);
+    expect(unwrap(await coordinator.expire(actor))).toBe('expired');
+    const state = await store.load(actor.userId);
+    expect(state?.reservations[r1]?.status).toBe('uncertain');
+    expect(state?.reservedAdmissionCount).toBe(0);
+    expect(state?.uncertainAdmissionCount).toBe(1);
+    expect(unwrap(await coordinator.reconcile(actor, r1, 'unavailable'))).toBe('uncertain');
+    expect(unwrap(await coordinator.reconcile(actor, r1, 'stored'))).toBe('committed');
+  });
+
+  it('allows safe cancellation only before storage begins', async () => {
+    const { coordinator, store } = setup();
+    expect(unwrap(await coordinator.reserveAdmission(actor, r1))).toBe('reserved');
+    expect(unwrap(await coordinator.finalize(actor, r1, 'denied'))).toBe('cancelled');
+    expect((await store.load(actor.userId))?.reservations[r1]?.status).toBe('cancelled');
+  });
+
+  it('keeps in-flight failures uncertain and does not release quota', async () => {
+    const { coordinator, store } = setup();
+    expect(unwrap(await coordinator.reserveAdmission(actor, r1))).toBe('reserved');
+    expect(unwrap(await coordinator.beginSave(actor, r1))).toBe('started');
+    expect(unwrap(await coordinator.finalize(actor, r1, 'unavailable'))).toBe('uncertain');
+    expect((await store.load(actor.userId))?.uncertainAdmissionCount).toBe(1);
+    expect(unwrap(await coordinator.finalize(actor, r1, 'unknown_commit'))).toBe('uncertain');
+  });
+
+  it('keeps unresolved reservations across an admission window reset', async () => {
+    const smallConfig = { ...config, admissionWindowMs: 10, newAdmissionLimit: 1 };
+    const clock = new FixtureClock();
+    const store = new InMemoryFixtureStore();
+    const coordinator = new QuotaCoordinator(new QuotaEngine(smallConfig), store, clock);
+    expect(unwrap(await coordinator.reserveAdmission(actor, r1))).toBe('reserved');
+    expect(unwrap(await coordinator.beginSave(actor, r1))).toBe('started');
+    clock.advance(100);
+    expect(unwrap(await coordinator.expire(actor))).toBe('expired');
+    expect((await store.load(actor.userId))?.uncertainAdmissionCount).toBe(1);
+    expect(unwrap(await coordinator.reserveAdmission(actor, r2))).toBe('rate_limited');
+  });
+
+  it('restores and validates state versions and corruption fail-closed', async () => {
+    const { coordinator, store } = setup();
+    const invalid = {
+      version: 999,
+      actorId: actor.userId,
+      shortWindowStartedAt: 1_000,
+      shortRequestCount: 0,
+      longWindowStartedAt: 1_000,
+      longRequestCount: 0,
+      admissionWindowStartedAt: 1_000,
+      confirmedAdmissionCount: 0,
+      reservedAdmissionCount: 0,
+      uncertainAdmissionCount: 0,
+      reservations: {},
+      updatedAt: 1_000,
+    } as unknown as QuotaState;
+    await store.seed(invalid);
+    expect((await coordinator.recordRequest(actor)).result).toBe('unavailable');
   });
 
   it('does not permit another actor to finalize an existing reservation', async () => {

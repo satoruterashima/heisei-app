@@ -2,7 +2,7 @@
 
 Status: **DRAFT / local fixture only**
 
-基点: PR #51 / `7b76a91ca9cc640a3f4a85749e9cdeda6c13bfe4`
+基点: PR #52 / `73229fa85d0ce9e4d366b1dc5874a47813d11459`
 
 ## 1. 実装範囲
 
@@ -26,26 +26,42 @@ bodyやJWT申告actorをこのcoreへ直接渡さない。fixture専用factory�
                 reserve
      +------------------------------+
      |                              v
-  (none) ---> reserved -------> committed
-                |  ^               |
-       timeout |  | accepted       | replay
-                v  |               v
-             expired          committed
-                |
-       denied/duplicate/conflict/unavailable
-                v
-             cancelled
+  (none) ---> reserved --beginSave--> in_flight --> committed
+                |                         |  ^          |
+       safe     | denied/duplicate       |  | stored    | replay
+       timeout  v                         |  |          v
+             expired                      |  +------- committed
+                                          |
+                              timeout/error/unknown
+                                          v
+                                      uncertain
 
-  reserved --unknown_commit--> uncertain --any retry--> uncertain
+  reserved --denied/duplicate/conflict--> cancelled
+  in_flight --known not-stored--> uncertain (then reconciliation)
+  uncertain --stored--> committed
+  uncertain --not_stored--> cancelled
                                       
   uncertainはTTLで自動解放しない。read-only reconciliationで
   G4のactor/key状態を確認するまでquotaを保持する。
 ```
 
-同一reservation IDの再送は、reservedならreplayed、uncertainなら新規予約ではなく
-idempotency_conflictとして扱う。committed/cancelled/expiredのID再利用も拒否する。
+保存開始前の`reserved`だけが期限切れ・既知の拒否で安全に解放できる。`beginSave`後の
+`in_flight`は期限を超えても`uncertain`へ移るだけで、保存結果の確認前にquotaを解放
+しない。保存開始を経由しない`accepted`はfail closedとする。同一reservation IDの
+再送は、reservedならreplayed、in_flightならreplayed、uncertainなら新規予約ではなく
+不確定として扱う。committed/cancelled/expiredのID再利用も拒否する。
 IDはサーバー生成UUID v4であり、生のIdempotency-Keyをstate、ログ、fixture storeへ
 保存しない。
+
+状態はversion 2で保存する。未知version、壊れたstate、actor不一致は復元せず
+`unavailable`とする。
+
+### Admission counterの分離
+
+`confirmedAdmissionCount`（現在windowの確定受付）、`reservedAdmissionCount`
+（reserved/in_flight）、`uncertainAdmissionCount`（結果不明）を分離する。window
+切替でリセットするのは確定受付数だけで、未解決予約は過去window由来でも失われない。
+新規予約の安全側判定には確定数と未解決数を用い、uncertainを自動解放しない。
 
 ## 3. 2種類の制限
 
@@ -58,15 +74,16 @@ DB保存より前に呼び出す。
 
 ### New admission quota
 
-`reserveAdmission`は新規保存候補だけのquotaを予約する。予約を確定するのは
-ReportRepositoryの結果が`accepted`の場合だけである。
+`reserveAdmission`は新規保存候補だけのquotaを予約する。保存処理へ進む直前に
+`beginSave`で`in_flight`へ遷移し、ReportRepositoryの結果が`accepted`の場合だけ
+予約を確定する。
 
 | Repository結果 | quota処理 |
 | --- | --- |
-| `accepted` | committed、quota消費を維持 |
-| `replayed` / `duplicate` / `denied` / `idempotency_conflict` | cancelled、予約分を解放 |
-| `unavailable` | cancelled候補。再試行と誤解放の運用は統合時に再確認 |
-| `unknown_commit` | uncertain、無条件解放・再予約・再INSERTをしない |
+| 保存開始前の`replayed` / `duplicate` / `denied` / `idempotency_conflict` | cancelled、予約分を解放 |
+| `accepted`（`in_flight`のみ） | committed、確定受付数へ反映 |
+| `unavailable` / 通信断（`in_flight`後） | uncertain、無条件解放・再予約・再INSERTをしない |
+| `unknown_commit` | uncertain、read-only照合まで保持 |
 
 `unknown_commit`をcancel扱いしないことが、本coreの最重要安全契約である。
 
@@ -89,8 +106,13 @@ DOとPostgreSQL間には分散transactionがないため、次の順序を候補
 2. request load quotaを予約する。
 3. new admission quotaを予約する。
 4. G3 validation/cryptoとG4 Repositoryを実行する。
-5. Repositoryの内部結果に応じてquotaをfinalizeする。
+5. 保存開始直前に`beginSave`し、Repositoryの内部結果に応じてquotaをfinalizeする。
 6. `unknown_commit`または通信断ならuncertainのままreconciliation対象にする。
+
+停止地点が予約前ならstateは未作成、予約直後・保存開始前なら安全にcancel可能、
+INSERT/COMMIT開始後は`in_flight`から`uncertain`へ移し、保存済み確認または不成立の
+証明が得られるまで解放しない。DO確定前後で通信が切れても、再確定を自動実行せず
+read-only照合を行う。
 
 quota予約成功後にG4が失敗した場合の予約返却、DO再起動、reconciliationのretry回数、
 監視通知はCEO承認が必要である。quota状態をPostgreSQL監査ログへ毎回書き込む設計は
@@ -124,11 +146,14 @@ CEOが承認すべき候補:
 
 ## 7. 検証結果と残存条件
 
-追加したfixtureテストは、quota内、短期/長期超過、reserve/commit/cancel/expiry、
-同一ID再送、別actor拒否、並列request/reservation、replay/duplicate/denied/conflict、
-unknown commit、state復元、clock境界、Store障害、state肥大化防御を対象とする。
+追加したfixtureテストは、quota内、短期/長期超過、reserve/beginSave/commit/cancel/expiry、
+保存開始後のTTL超過、同一ID再送、別actor拒否、並列request/reservation、
+replay/duplicate/denied/conflict、unknown commit、read-only reconciliation、window切替、
+state version/corruption復元、clock境界、Store障害、state肥大化防御を対象とする。
 
-G5-01のローカルcoreは、実DO・実HTTP・G4本番統合なしで検証する。残存条件は、
+G5-01のローカルcoreは、実DO・実HTTP・G4本番統合なしで検証する。今回の
+reconciliationは状態遷移インターフェースとfixtureのみで、実PostgreSQL照合は未実装である。
+残存条件は、
 CEO承認済み閾値、DO binding/namespace、永続化・再起動・reconciliationの実装、
 負荷試験、429/503/Retry-After契約、費用上限、G4-B2本番Secret/HTTP統合である。
 
