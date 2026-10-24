@@ -21,7 +21,7 @@ export interface TrustedPostgresExecutor {
   withProfileWriter?<T>(userId: string, operation: (query: PostgresQueryExecutor) => Promise<T>): Promise<T>;
   withBlockWriter?<T>(userId: string, operation: (query: PostgresQueryExecutor) => Promise<T>): Promise<T>;
   /** Internal report boundary; caller cannot choose the database role or GUC values. */
-  withReportWriter?<T>(userId: string, targetUserId: string, operation: (query: PostgresQueryExecutor) => Promise<T>): Promise<T>;
+  withReportWriter?<T>(userId: string, targetUserId: string, operation: (query: PostgresQueryExecutor) => Promise<T>, authSubject?: string): Promise<T>;
   withVisibilityReader?<T>(actorUserId: string, targetUserId: string, operation: (query: PostgresQueryExecutor) => Promise<T>): Promise<T>;
 }
 

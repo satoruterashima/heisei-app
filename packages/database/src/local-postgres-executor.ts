@@ -1,6 +1,6 @@
 import type { Pool, PoolClient, PoolConfig, QueryResultRow } from 'pg';
 import type { PostgresQueryExecutor, TrustedPostgresExecutor } from './postgres-stores.js';
-import { UnknownCommitError } from './report-repository.js';
+import { TransactionRollbackError, UnknownCommitError } from './report-repository.js';
 
 /**
  * Local integration-test adapter. The pg driver is intentionally loaded only
@@ -94,12 +94,13 @@ export class LocalTrustedPostgresExecutor implements TrustedPostgresExecutor {
     return this.withTransaction(this.roles.blockWriter, [['app.user_id', userId]], operation);
   }
 
-  async withReportWriter<T>(userId: string, targetUserId: string, operation: (query: PostgresQueryExecutor) => Promise<T>): Promise<T> {
-    if (!this.isUuid(userId) || !this.isUuid(targetUserId)) throw new Error('invalid report context');
+  async withReportWriter<T>(userId: string, targetUserId: string, operation: (query: PostgresQueryExecutor) => Promise<T>, authSubject?: string): Promise<T> {
+    if (!this.isUuid(userId) || !this.isUuid(targetUserId) || typeof authSubject !== 'string' || !authSubject || authSubject.length > 255) throw new Error('invalid report context');
     return this.withTransaction(
       this.roles.reportWriter,
-      [['app.user_id', userId], ['app.visibility_target_id', targetUserId]],
+      [['app.user_id', userId], ['app.auth_subject', authSubject], ['app.visibility_target_id', targetUserId]],
       operation,
+      true,
     );
   }
 
@@ -120,6 +121,7 @@ export class LocalTrustedPostgresExecutor implements TrustedPostgresExecutor {
     role: string,
     settings: readonly [string, string][],
     operation: (query: PostgresQueryExecutor) => Promise<T>,
+    wrapRollback = false,
   ): Promise<T> {
     const client = await this.pool.connect();
     let failed = false;
@@ -146,6 +148,7 @@ export class LocalTrustedPostgresExecutor implements TrustedPostgresExecutor {
       } catch {
         // The connection is discarded below if rollback itself failed.
       }
+      if (wrapRollback && !(error instanceof UnknownCommitError)) throw new TransactionRollbackError(error);
       throw error;
     } finally {
       // SET LOCAL and the role both disappear at transaction end. Mark a

@@ -4,7 +4,7 @@
 REVOKE ALL ON FUNCTION report_create_atomic(uuid, varchar, varchar, varchar) FROM heisei_report_writer;
 
 REVOKE ALL ON reports, report_idempotency, audit_logs FROM heisei_report_tx_writer;
-GRANT SELECT (id, auth_level, account_status, profile_visibility) ON profiles TO heisei_report_tx_writer;
+GRANT SELECT (id, auth_subject, auth_level, account_status, profile_visibility) ON profiles TO heisei_report_tx_writer;
 GRANT SELECT ON blocks TO heisei_report_tx_writer;
 GRANT SELECT ON reports, report_idempotency TO heisei_report_tx_writer;
 GRANT INSERT ON reports, report_idempotency, audit_logs TO heisei_report_tx_writer;
@@ -81,10 +81,60 @@ DECLARE
 BEGIN
   IF p_target_user_id IS NULL OR p_report_id IS NULL
      OR p_request_id IS NULL OR length(p_request_id) NOT BETWEEN 1 AND 128
+     OR p_category IS NULL OR p_category NOT IN ('harassment', 'spam', 'impersonation', 'inappropriate_content', 'fraud', 'other')
+     OR p_category_version IS DISTINCT FROM 'category-v1'
      OR p_fingerprint_candidates IS NULL
      OR jsonb_typeof(p_fingerprint_candidates) <> 'array'
      OR jsonb_array_length(p_fingerprint_candidates) = 0
   THEN
+    RETURN QUERY SELECT 'unavailable'::varchar, NULL::uuid;
+    RETURN;
+  END IF;
+
+  -- Reject malformed candidates and extra/missing JSON fields before any
+  -- lock or write. Digests are fixed-size HMAC-SHA-256 values.
+  IF p_fingerprint_algorithm_version <> 'hmac-sha256-v1'
+     OR EXISTS (
+       SELECT 1 FROM jsonb_array_elements(p_fingerprint_candidates) AS c(value)
+       WHERE jsonb_typeof(value) <> 'object'
+          OR (SELECT count(*) FROM jsonb_object_keys(value) AS k(key)
+              WHERE key NOT IN ('scope_hex', 'payload_hex', 'key_version', 'algorithm_version')) <> 0
+          OR (SELECT count(*) FROM (VALUES ('scope_hex'), ('payload_hex'), ('key_version'), ('algorithm_version')) AS required(key)
+              WHERE NOT (value ? required.key)) <> 0
+          OR jsonb_typeof(value->'scope_hex') <> 'string'
+          OR jsonb_typeof(value->'payload_hex') <> 'string'
+          OR jsonb_typeof(value->'key_version') <> 'string'
+          OR jsonb_typeof(value->'algorithm_version') <> 'string'
+          OR value->>'algorithm_version' <> 'hmac-sha256-v1'
+          OR value->>'scope_hex' !~ '^[0-9a-f]{64}$'
+          OR value->>'payload_hex' !~ '^[0-9a-f]{64}$'
+          OR length(value->>'key_version') NOT BETWEEN 1 AND 80
+     )
+     OR EXISTS (
+     SELECT 1
+       FROM jsonb_array_elements(p_fingerprint_candidates) WITH ORDINALITY AS a(value, ordinal)
+       JOIN jsonb_array_elements(p_fingerprint_candidates) WITH ORDINALITY AS b(value, ordinal)
+         ON a.ordinal < b.ordinal
+        AND a.value->>'key_version' = b.value->>'key_version'
+     )
+  THEN
+    RETURN QUERY SELECT 'unavailable'::varchar, NULL::uuid;
+    RETURN;
+  END IF;
+
+  IF (p_ciphertext_hex IS NULL OR p_nonce_hex IS NULL OR p_algorithm_version IS NULL OR p_encryption_key_version IS NULL OR p_aad_version IS NULL)
+       AND NOT (p_ciphertext_hex IS NULL AND p_nonce_hex IS NULL AND p_algorithm_version IS NULL AND p_encryption_key_version IS NULL AND p_aad_version IS NULL)
+  THEN
+    RETURN QUERY SELECT 'unavailable'::varchar, NULL::uuid;
+    RETURN;
+  END IF;
+  IF p_ciphertext_hex IS NOT NULL AND (
+       p_algorithm_version <> 'aes-256-gcm-v1'
+       OR p_aad_version <> 'aad-v1'
+       OR length(btrim(p_encryption_key_version)) = 0 OR length(p_encryption_key_version) > 80
+       OR p_nonce_hex !~ '^[0-9a-f]{24}$'
+       OR p_ciphertext_hex !~ '^[0-9a-f]+$' OR length(p_ciphertext_hex) < 32 OR mod(length(p_ciphertext_hex), 2) <> 0
+  ) THEN
     RETURN QUERY SELECT 'unavailable'::varchar, NULL::uuid;
     RETURN;
   END IF;
@@ -140,14 +190,15 @@ BEGIN
   SELECT auth_level, account_status
     INTO v_actor_level, v_actor_status
     FROM profiles
-   WHERE id = v_actor_user_id;
+   WHERE id = v_actor_user_id
+     AND auth_subject = current_setting('app.auth_subject', true);
   SELECT account_status, profile_visibility
     INTO v_target_status, v_target_visibility
     FROM profiles
    WHERE id = p_target_user_id;
 
-  IF NOT FOUND OR v_actor_level < 2 OR v_actor_status <> 'active'
-     OR v_target_status <> 'active' OR v_target_visibility <> 'public'
+  IF NOT FOUND OR COALESCE(v_actor_level, 0) < 2 OR COALESCE(v_actor_status, '') <> 'active'
+     OR COALESCE(v_target_status, '') <> 'active' OR COALESCE(v_target_visibility, '') <> 'public'
      OR v_actor_user_id = p_target_user_id
   THEN
     RETURN QUERY SELECT 'denied'::varchar, NULL::uuid;
