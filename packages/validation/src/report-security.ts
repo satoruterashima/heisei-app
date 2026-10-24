@@ -31,6 +31,8 @@ export type ValidatedReportPayload = {
   targetUserId: string;
   category: ReportCategory;
   description?: string;
+  /** Original user text is retained only for immediate encryption; never log or persist it as plaintext. */
+  rawDescription?: string;
 };
 
 export type ReportPayloadErrorCode =
@@ -105,8 +107,10 @@ export function validateReportPayload(payload: unknown, bodyBytes?: number): Rep
   if (!isReportCategory(input.category)) return validationFailure({ code: 'invalid_category', field: 'category' });
 
   let description: string | undefined;
+  let rawDescription: string | undefined;
   if (Object.prototype.hasOwnProperty.call(input, 'description')) {
     if (typeof input.description !== 'string') return validationFailure({ code: 'invalid_description', field: 'description' });
+    rawDescription = input.description;
     description = normalizeReportDescription(input.description);
     if (description.length === 0) return validationFailure({ code: 'empty_description', field: 'description' });
     if (hasForbiddenControlCharacter(description)) return validationFailure({ code: 'control_character', field: 'description' });
@@ -121,7 +125,7 @@ export function validateReportPayload(payload: unknown, bodyBytes?: number): Rep
       targetType: 'user',
       targetUserId: normalizeUuid(input.targetUserId as string),
       category: input.category as ReportCategory,
-      ...(description === undefined ? {} : { description }),
+      ...(description === undefined ? {} : { description, rawDescription }),
     },
   };
 }

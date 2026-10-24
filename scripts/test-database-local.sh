@@ -881,5 +881,14 @@ test "$app_execute_privilege" = f
 test "$tx_role_attributes" = '0:0:0'
 test "$tx_role_memberships" = 0
 echo "PASS: atomic closure privileges, role attributes and membership are restricted"
+psql_file < "$repo_root/packages/database/drizzle/0004_report_repository_g4b2.sql" >/dev/null
+psql_file < "$repo_root/packages/database/drizzle/roles.sql" >/dev/null
+psql_file < "$repo_root/packages/database/drizzle/0004_report_repository_g4b2.sql" >/dev/null
+psql_file < "$repo_root/packages/database/drizzle/roles.sql" >/dev/null
+legacy_atomic_execute="$(psql_file -Atqc "SELECT has_function_privilege('heisei_report_writer', 'public.report_create_atomic(uuid,character varying,character varying,character varying)', 'EXECUTE')")"
+repository_atomic_execute="$(psql_file -Atqc "SELECT has_function_privilege('heisei_report_writer', 'public.report_create_atomic_v2(uuid,character varying,character varying,character varying,uuid,jsonb,text,text,text,text,text,text)', 'EXECUTE')")"
+test "$legacy_atomic_execute" = f
+test "$repository_atomic_execute" = t
+echo "PASS: G4-B2 migration disables legacy save path and keeps repository function only"
 echo "PASS: migration first application and reapplication"
 echo "PASS: PostgreSQL RLS integration checks"

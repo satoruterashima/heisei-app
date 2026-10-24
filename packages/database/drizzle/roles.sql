@@ -36,6 +36,18 @@ BEGIN
   END IF;
 END $$;
 
+-- G4-B2 supersedes the isolated pre-repository function when present. The
+-- legacy function remains in the schema for migration compatibility but is
+-- not an executable report-write path after the repository boundary exists.
+DO $$
+BEGIN
+  IF to_regprocedure('public.report_create_atomic_v2(uuid,character varying,character varying,character varying,uuid,jsonb,text,text,text,text,text,text)') IS NOT NULL THEN
+    EXECUTE 'REVOKE ALL ON FUNCTION report_create_atomic(uuid, varchar, varchar, varchar) FROM PUBLIC, heisei_report_writer';
+    EXECUTE 'REVOKE ALL ON FUNCTION report_create_atomic_v2(uuid, varchar, varchar, varchar, uuid, jsonb, text, text, text, text, text, text) FROM PUBLIC';
+    EXECUTE 'GRANT EXECUTE ON FUNCTION report_create_atomic_v2(uuid, varchar, varchar, varchar, uuid, jsonb, text, text, text, text, text, text) TO heisei_report_writer';
+  END IF;
+END $$;
+
 ALTER ROLE heisei_app NOSUPERUSER NOBYPASSRLS NOLOGIN;
 ALTER ROLE heisei_staff NOSUPERUSER NOBYPASSRLS NOLOGIN;
 ALTER ROLE heisei_audit_writer NOSUPERUSER NOBYPASSRLS NOLOGIN;
@@ -115,7 +127,13 @@ DO $$
 BEGIN
   IF to_regclass('public.reports') IS NOT NULL
     AND to_regprocedure('public.report_create_atomic(uuid,character varying,character varying,character varying)') IS NOT NULL THEN
-    EXECUTE 'REVOKE ALL ON FUNCTION report_create_atomic(uuid, varchar, varchar, varchar) FROM PUBLIC';
-    EXECUTE 'GRANT EXECUTE ON FUNCTION report_create_atomic(uuid, varchar, varchar, varchar) TO heisei_report_writer';
+    IF to_regprocedure('public.report_create_atomic_v2(uuid,character varying,character varying,character varying,uuid,jsonb,text,text,text,text,text,text)') IS NOT NULL THEN
+      EXECUTE 'REVOKE ALL ON FUNCTION report_create_atomic(uuid, varchar, varchar, varchar) FROM PUBLIC, heisei_report_writer';
+      EXECUTE 'REVOKE ALL ON FUNCTION report_create_atomic_v2(uuid, varchar, varchar, varchar, uuid, jsonb, text, text, text, text, text, text) FROM PUBLIC';
+      EXECUTE 'GRANT EXECUTE ON FUNCTION report_create_atomic_v2(uuid, varchar, varchar, varchar, uuid, jsonb, text, text, text, text, text, text) TO heisei_report_writer';
+    ELSE
+      EXECUTE 'REVOKE ALL ON FUNCTION report_create_atomic(uuid, varchar, varchar, varchar) FROM PUBLIC';
+      EXECUTE 'GRANT EXECUTE ON FUNCTION report_create_atomic(uuid, varchar, varchar, varchar) TO heisei_report_writer';
+    END IF;
   END IF;
 END $$;

@@ -1,5 +1,6 @@
 import type { Pool, PoolClient, PoolConfig, QueryResultRow } from 'pg';
 import type { PostgresQueryExecutor, TrustedPostgresExecutor } from './postgres-stores.js';
+import { UnknownCommitError } from './report-repository.js';
 
 /**
  * Local integration-test adapter. The pg driver is intentionally loaded only
@@ -16,9 +17,10 @@ const DEFAULT_ROLES = {
   identityWriter: 'heisei_identity_writer',
   profileWriter: 'heisei_profile_writer',
   blockWriter: 'heisei_block_writer',
+  reportWriter: 'heisei_report_writer',
   visibilityReader: 'heisei_visibility_reader',
 } as const;
-type FixedRoles = { app: string; identityWriter: string; profileWriter: string; blockWriter: string; visibilityReader: string };
+type FixedRoles = { app: string; identityWriter: string; profileWriter: string; blockWriter: string; reportWriter: string; visibilityReader: string };
 
 const SAFE_ROLE = /^[a-z_][a-z0-9_]*$/u;
 
@@ -54,6 +56,7 @@ export class LocalTrustedPostgresExecutor implements TrustedPostgresExecutor {
     quoteRole(this.roles.identityWriter);
     quoteRole(this.roles.profileWriter);
     quoteRole(this.roles.blockWriter);
+    quoteRole(this.roles.reportWriter);
     quoteRole(this.roles.visibilityReader);
     if (options.pool) {
       this.pool = options.pool;
@@ -91,6 +94,15 @@ export class LocalTrustedPostgresExecutor implements TrustedPostgresExecutor {
     return this.withTransaction(this.roles.blockWriter, [['app.user_id', userId]], operation);
   }
 
+  async withReportWriter<T>(userId: string, targetUserId: string, operation: (query: PostgresQueryExecutor) => Promise<T>): Promise<T> {
+    if (!this.isUuid(userId) || !this.isUuid(targetUserId)) throw new Error('invalid report context');
+    return this.withTransaction(
+      this.roles.reportWriter,
+      [['app.user_id', userId], ['app.visibility_target_id', targetUserId]],
+      operation,
+    );
+  }
+
   async withVisibilityReader<T>(actorUserId: string, targetUserId: string, operation: (query: PostgresQueryExecutor) => Promise<T>): Promise<T> {
     if (!this.isUuid(actorUserId) || !this.isUuid(targetUserId)) throw new Error('invalid visibility ids');
     return this.withTransaction(
@@ -120,7 +132,12 @@ export class LocalTrustedPostgresExecutor implements TrustedPostgresExecutor {
         await client.query('SELECT set_config($1, $2, true)', [name, value]);
       }
       const result = await operation(queryAdapter(client));
-      await client.query('COMMIT');
+      try {
+        await client.query('COMMIT');
+      } catch {
+        failed = true;
+        throw new UnknownCommitError();
+      }
       return result;
     } catch (error) {
       failed = true;
