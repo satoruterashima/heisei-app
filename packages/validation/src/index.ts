@@ -19,3 +19,4 @@ export const updateProfileSchema = z.object({
 export type UpdateProfileInput = z.infer<typeof updateProfileSchema>;
 
 export * from './report-security.js';
+export * from './secret-report-key-provider.js';
