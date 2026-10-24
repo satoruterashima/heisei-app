@@ -80,9 +80,12 @@ DECLARE
 BEGIN
   v_actor_user_id := current_setting('app.user_id', true)::uuid;
   PERFORM set_config('app.visibility_target_id', p_target_user_id::text, true);
-  -- Serialize report admission for one target. Existing profile/block writers
-  -- do not yet take this lock, so this does not by itself close their TOCTOU.
-  PERFORM pg_advisory_xact_lock(hashtextextended(p_target_user_id::text, 0));
+  -- Serialize every operation involving this actor/target pair. Both UUIDs
+  -- are canonicalized by the uuid cast and acquired in one global order.
+  PERFORM pg_advisory_xact_lock(hashtextextended(
+    LEAST(v_actor_user_id::text, p_target_user_id::text), 0));
+  PERFORM pg_advisory_xact_lock(hashtextextended(
+    GREATEST(v_actor_user_id::text, p_target_user_id::text), 0));
 
   SELECT auth_level, account_status
     INTO v_actor_level, v_actor_status

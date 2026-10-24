@@ -140,7 +140,12 @@ const blockDeleteByTargetSql = `
   RETURNING blocked_id::text AS target_user_id
 `;
 
-const targetLockSql = `
+const pairLockKeysSql = `
+  SELECT LEAST($1::uuid::text, $2::uuid::text) AS first_lock,
+         GREATEST($1::uuid::text, $2::uuid::text) AS second_lock
+`;
+
+const lockKeySql = `
   SELECT pg_advisory_xact_lock(hashtextextended($1::text, 0))
 `;
 
@@ -157,6 +162,14 @@ const blockAuditSql = `
 
 function isUuid(value: string): boolean {
   return /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(value);
+}
+
+async function acquirePairLocks(query: PostgresQueryExecutor, actorUserId: string, targetUserId: string): Promise<void> {
+  const keys = await query.query<{ first_lock: string; second_lock: string }>(pairLockKeysSql, [actorUserId, targetUserId]);
+  const row = keys.rows[0];
+  if (!row) throw new Error('invalid block lock pair');
+  await query.query(lockKeySql, [row.first_lock]);
+  if (row.second_lock !== row.first_lock) await query.query(lockKeySql, [row.second_lock]);
 }
 
 /** Only a missing target reference is masked; unrelated FK/audit errors remain failures. */
@@ -177,7 +190,7 @@ export class PostgresBlockMutationStore implements BlockMutationStore {
     if (!this.executor.withBlockWriter) throw new Error('block writer is unavailable');
     try {
       return await this.executor.withBlockWriter(actorUserId, async (query) => {
-        await query.query(targetLockSql, [targetUserId]);
+        await acquirePairLocks(query, actorUserId, targetUserId);
         const inserted = await query.query<{ block_id: string; target_user_id: string }>(blockInsertSql, [actorUserId, targetUserId]);
         const row = inserted.rows[0];
         if (!row) return;
@@ -199,7 +212,7 @@ export class PostgresBlockMutationStore implements BlockMutationStore {
       const target = await query.query<{ target_user_id: string }>(blockTargetLookupSql, [blockId]);
       const targetUserId = target.rows[0]?.target_user_id;
       if (!targetUserId) return;
-      await query.query(targetLockSql, [targetUserId]);
+      await acquirePairLocks(query, actorUserId, targetUserId);
       const deleted = await query.query<{ target_user_id: string }>(blockDeleteSql, [blockId]);
       const row = deleted.rows[0];
       if (!row || typeof row.target_user_id !== 'string') return;
@@ -211,7 +224,7 @@ export class PostgresBlockMutationStore implements BlockMutationStore {
     if (!isUuid(actorUserId) || !isUuid(targetUserId) || !requestId || requestId.length > 128) throw new Error('invalid block mutation');
     if (!this.executor.withBlockWriter) throw new Error('block writer is unavailable');
     return this.executor.withBlockWriter(actorUserId, async (query) => {
-      await query.query(targetLockSql, [targetUserId]);
+      await acquirePairLocks(query, actorUserId, targetUserId);
       const deleted = await query.query<{ target_user_id: string }>(blockDeleteByTargetSql, [actorUserId, targetUserId]);
       if (deleted.rows.length > 1) throw new Error('unexpected block row count');
       const row = deleted.rows[0];

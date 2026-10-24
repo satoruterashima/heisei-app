@@ -215,8 +215,8 @@ WHERE blocker_id = '00000000-0000-4000-8000-000000000001'
 SQL
 echo "PASS: atomic function denies actor->target and target->actor blocks"
 
-# Deterministic advisory-lock barrier: session A holds the target lock before
-# admission, while session B must wait and then complete after A commits.
+# Deterministic advisory-lock barrier: session A holds the canonical actor/
+# target pair before admission, while session B must wait and then complete.
 psql_file <<'SQL' >/dev/null
 UPDATE profiles SET profile_visibility = 'public'
 WHERE id = '00000000-0000-4000-8000-000000000003';
@@ -231,6 +231,7 @@ run_as heisei_report_login >"$lock_a" 2>&1 <<'SQL' &
 SET ROLE heisei_report_writer;
 SET app.user_id = '00000000-0000-4000-8000-000000000001';
 BEGIN;
+SELECT pg_advisory_xact_lock(hashtextextended('00000000-0000-4000-8000-000000000001', 0));
 SELECT pg_advisory_xact_lock(hashtextextended('00000000-0000-4000-8000-000000000003', 0));
 SELECT pg_sleep(1);
 SELECT report_create_atomic('00000000-0000-4000-8000-000000000003', 'other', 'category-v1', 'g4b1-lock-a');
@@ -262,7 +263,56 @@ WHERE target_user_id = '00000000-0000-4000-8000-000000000003'
 UPDATE profiles SET profile_visibility = 'private'
 WHERE id = '00000000-0000-4000-8000-000000000003';
 SQL
-echo "PASS: barriered concurrent atomic admissions serialize by target lock"
+echo "PASS: barriered concurrent atomic admissions serialize by canonical actor/target locks"
+
+# Reverse-direction pair barrier: A->B and B->A must contend on the same
+# canonical two-lock set, rather than acquiring different target locks.
+psql_file <<'SQL' >/dev/null
+DELETE FROM reports
+WHERE (reporter_user_id = '00000000-0000-4000-8000-000000000001' AND target_user_id = '00000000-0000-4000-8000-000000000002')
+   OR (reporter_user_id = '00000000-0000-4000-8000-000000000002' AND target_user_id = '00000000-0000-4000-8000-000000000001');
+UPDATE profiles SET profile_visibility = 'public'
+WHERE id IN ('00000000-0000-4000-8000-000000000001', '00000000-0000-4000-8000-000000000002');
+SQL
+pair_a="$(mktemp)"
+pair_b="$(mktemp)"
+set +e
+run_as heisei_report_login >"$pair_a" 2>&1 <<'SQL' &
+SET ROLE heisei_report_writer;
+SET app.user_id = '00000000-0000-4000-8000-000000000001';
+BEGIN;
+SELECT pg_advisory_xact_lock(hashtextextended('00000000-0000-4000-8000-000000000001', 0));
+SELECT pg_advisory_xact_lock(hashtextextended('00000000-0000-4000-8000-000000000002', 0));
+SELECT pg_sleep(1);
+SELECT report_create_atomic('00000000-0000-4000-8000-000000000002', 'other', 'category-v1', 'g4b1-pair-a');
+COMMIT;
+SQL
+pair_pid_a=$!
+sleep 0.2
+run_as heisei_report_login >"$pair_b" 2>&1 <<'SQL' &
+SET ROLE heisei_report_writer;
+SET app.user_id = '00000000-0000-4000-8000-000000000002';
+SELECT report_create_atomic('00000000-0000-4000-8000-000000000001', 'other', 'category-v1', 'g4b1-pair-b');
+SQL
+pair_pid_b=$!
+wait "$pair_pid_a"
+pair_status_a=$?
+wait "$pair_pid_b"
+pair_status_b=$?
+set -e
+pair_audit_count="$(psql_file -Atqc "SELECT count(*) FROM audit_logs WHERE request_id IN ('g4b1-pair-a', 'g4b1-pair-b')")"
+pair_report_count="$(psql_file -Atqc "SELECT count(*) FROM reports WHERE reporter_user_id IN ('00000000-0000-4000-8000-000000000001', '00000000-0000-4000-8000-000000000002') AND target_user_id IN ('00000000-0000-4000-8000-000000000001', '00000000-0000-4000-8000-000000000002') AND category = 'other'")"
+rm -f "$pair_a" "$pair_b"
+if [[ "$pair_status_a" != 0 ]] || [[ "$pair_status_b" != 0 ]] || [[ "$pair_audit_count" != 2 ]] || [[ "$pair_report_count" != 2 ]]; then
+  echo "FAIL: reverse-direction pair lock barrier did not serialize safely" >&2
+  exit 1
+fi
+psql_file <<'SQL' >/dev/null
+DELETE FROM reports
+WHERE (reporter_user_id = '00000000-0000-4000-8000-000000000001' AND target_user_id = '00000000-0000-4000-8000-000000000002')
+   OR (reporter_user_id = '00000000-0000-4000-8000-000000000002' AND target_user_id = '00000000-0000-4000-8000-000000000001');
+SQL
+echo "PASS: reverse-direction report admissions share canonical pair locks"
 
 expect_failure "atomic audit failure rollback" run_as heisei_report_login <<'SQL'
 SET ROLE heisei_report_writer;

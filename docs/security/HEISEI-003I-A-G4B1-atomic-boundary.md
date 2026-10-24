@@ -13,7 +13,7 @@ Status: **DRAFT / isolated PostgreSQL only**
 - actor/targetのaccount statusとL2条件をDB projectionで検証する。
 - G2判定、report INSERT、`report.create`監査INSERTを同一関数呼出し・同一transaction境界で行う。
 - 監査失敗、制約失敗、RLS失敗はreportとともにrollbackする。
-- targetごとのtransaction-level advisory lockを取得する。
+- actor/targetをUUIDとして正規化し、辞書順に両方のtransaction-level advisory lockを取得する。
 - 関数は `NOLOGIN/NOSUPERUSER/NOBYPASSRLS` role所有、固定search_path、PUBLIC EXECUTEなしとする。
 
 関数は内部の隔離検証用であり、通報API・本番Repositoryではない。
@@ -25,10 +25,10 @@ Status: **DRAFT / isolated PostgreSQL only**
 |保存直前SELECT|不十分。判定後のvisibility/block/status変更を防げない。|
 |SERIALIZABLE|同一transactionで判定・保存し、更新側も同じ分離契約に参加する必要がある。|
 |profile row lock|新規block INSERTを防げず、profileだけでは不十分。|
-|advisory lock|report関数内の同一target受付を直列化できるが、既存profile/block writerが同じlockを取得しない限り完全なTOCTOU対策ではない。|
+|advisory lock|actor/target pairを同一の正規化・固定順で取得すれば、協調するreport/block経路を直列化できる。|
 |更新経路との明示的協調|最も強い候補。ただし既存block/profile status更新経路のlock契約変更が必要。|
 
-block mutation storeのINSERT/DELETE経路にも同じtarget lockを追加したため、実装済みblock更新経路は受付と協調する。profile_visibility変更APIとaccount_status変更APIは現時点で未実装であり、高権限SQLによる直接変更は通常運用の保証範囲から除外する。したがってG4-B1の完全PASSには、将来のprofile/status更新経路への同一契約適用が残る。
+block mutation storeのINSERT/DELETE経路にも同じactor/target pair lockを追加したため、実装済みblock更新経路は受付と協調する。block ID指定DELETEも対象特定後にpair lockを取得してから削除する。profile_visibility変更APIとaccount_status変更APIは現時点で未実装であり、高権限SQLによる直接変更は通常運用の保証範囲から除外する。したがってG4-B1の完全PASSには、将来のprofile/status更新経路への同一契約適用が残る。
 
 ## 監査原子性
 
