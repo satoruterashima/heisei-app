@@ -1,5 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { env, runInDurableObject } from 'cloudflare:test';
+import { Hono } from 'hono';
+import { DurableObjectQuotaBoundary } from '../apps/api/src/quota-do-boundary.js';
 import type { QuotaActor } from '../apps/api/src/quota-do-worker.js';
 import { fixtureQuotaActor, fixtureReservationId, type QuotaState } from '../packages/domain/src/index.js';
 
@@ -13,6 +15,7 @@ const actor = fixtureQuotaActor('00000000-0000-4000-8000-000000000021');
 const otherActor = fixtureQuotaActor('00000000-0000-4000-8000-000000000022');
 const reservation = fixtureReservationId('00000000-0000-4000-8000-000000000121');
 const otherReservation = fixtureReservationId('00000000-0000-4000-8000-000000000122');
+const apiActorId = '00000000-0000-4000-8000-000000000031';
 
 function stub(userId: string) {
   return env.QUOTA_ACTOR.get(env.QUOTA_ACTOR.idFromName(userId));
@@ -29,6 +32,32 @@ async function seedState(name: string, stateValue: unknown): Promise<void> {
 }
 
 describe('real local Durable Object quota runtime', () => {
+  it('connects an internal Hono flow to the real DO RPC boundary', async () => {
+    const app = new Hono();
+    const boundary = new DurableObjectQuotaBoundary(env.QUOTA_ACTOR);
+    app.post('/internal/report', async (c) => {
+      const actor = fixtureQuotaActor(apiActorId);
+      const reservation = fixtureReservationId('00000000-0000-4000-8000-000000000032');
+      if ((await boundary.recordRequest(actor)).result !== 'allowed') return c.json({ error: 'unavailable' }, 503);
+      if ((await boundary.reserveAdmission(actor, reservation)).result !== 'reserved') return c.json({ error: 'unavailable' }, 503);
+      if ((await boundary.beginSave(actor, reservation)).result !== 'started') return c.json({ error: 'unavailable' }, 503);
+      const result = await boundary.finalize(actor, reservation, 'accepted');
+      return c.json({ result: result.result }, result.result === 'committed' ? 202 : 503);
+    });
+    const response = await app.request('/internal/report', { method: 'POST' });
+    expect(response.status).toBe(202);
+    const state = await persistedState(apiActorId) as QuotaState;
+    expect(state.confirmedAdmissionCount).toBe(1);
+    expect(state.reservedAdmissionCount).toBe(0);
+  });
+
+  it('keeps Hono-facing errors generic when the real DO state is corrupt', async () => {
+    const corruptActorId = '00000000-0000-4000-8000-000000000035';
+    await seedState(corruptActorId, { version: 1 });
+    const result = await new DurableObjectQuotaBoundary(env.QUOTA_ACTOR).recordRequest(fixtureQuotaActor(corruptActorId));
+    expect(result.result).toBe('unavailable');
+  });
+
   it('uses the DO input gate for same-actor parallel requests', async () => {
     const results = await Promise.all(Array.from({ length: 3 }, () => stub(actor.userId).recordRequest(actor)));
     expect(results.filter((result) => result.result === 'allowed')).toHaveLength(2);
