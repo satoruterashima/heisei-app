@@ -1,5 +1,9 @@
 # HEISEI 通報運営機能準備（DRAFT）
 
+> 案件単位の現行契約は `HEISEI-report-case-management.md` に更新されている。
+> 本書の target-user scope / trusted assignment resolver は履歴上の準備案であり、
+> 現行のRLS認可根拠ではない。
+
 ## 保持・削除契約
 
 今回の承認済み保持仕様は次の通りである。
@@ -18,9 +22,9 @@
 
 ## スタッフ運用境界
 
-ローカル実装した `GET /api/v1/staff/reports` は、server-side identityが active、L3以上、`admin` roleである場合だけ利用できる。割当対象はクライアント入力ではなく、注入されたtrusted assignment resolverから取得する。
+ローカル実装した `GET /api/v1/staff/reports` は、server-side identityが active、L3以上、`admin` roleである場合だけ利用できる。現行実装の割当対象は `report_staff_assignments` の有効な案件IDからDB/RLSで導出する。
 
-返却対象は、pending通報のID、対象、カテゴリ、状態、作成時刻などのmetadataだけである。暗号文、nonce、鍵version、平文本文はSELECT/API応答に含めない。閲覧は `report.staff.view` として監査し、DBのactor-bound staff scopeで対象行を制限する。
+返却対象は、pending通報のID、対象、カテゴリ、状態、作成時刻などのmetadataだけである。暗号文、nonce、鍵version、平文本文はSELECT/API応答に含めない。閲覧は `report.staff.view` として監査し、DBのactor-bound案件割当で対象行を制限する。
 
 以下は未実装・未有効化である。
 
