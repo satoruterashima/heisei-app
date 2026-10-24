@@ -125,7 +125,7 @@ describe('real local Durable Object quota runtime', () => {
   it('rejects reservation count overflow and unknown reservation structure', async () => {
     const invalidActor = fixtureQuotaActor('00000000-0000-4000-8000-000000000026');
     const now = Date.now();
-    const ids = ['00000000-0000-4000-8000-000000000131', '00000000-0000-4000-8000-000000000132', '00000000-0000-4000-8000-000000000133', '00000000-0000-4000-8000-000000000134', '00000000-0000-4000-8000-000000000135'];
+    const ids = Array.from({ length: 257 }, (_, index) => `00000000-0000-4000-8000-${String(0x131 + index).padStart(12, '0')}`);
     const invalid = {
       version: 2,
       actorId: invalidActor.userId,
