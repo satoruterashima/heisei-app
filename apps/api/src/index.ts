@@ -2,12 +2,26 @@ import { Hono } from 'hono';
 import { cors } from 'hono/cors';
 import { AccessPolicyService, authMiddleware, authorize, isAccessOperation, optionalAuthMiddleware, type AccessPolicyInput, type AuthMiddlewareOptions, type AuthVariables, getAuth, getOptionalAuth } from '@heisei/auth';
 import type { JwtVerifier } from '@heisei/auth';
-import { DatabaseIdentityLoader, PostgresBlockMutationStore, PostgresBlockRelationStore, PostgresIdentityRecordStore, PostgresProfileStore, type BlockMutationStore, type ProfileRecord, type ProfileStore, type TrustedPostgresExecutor } from '@heisei/database';
+import { DatabaseIdentityLoader, PostgresBlockMutationStore, PostgresBlockRelationStore, PostgresIdentityRecordStore, PostgresProfileStore, ReportRepository, prepareReportPayload, type BlockMutationStore, type ProfileRecord, type ProfileStore, type ReportStaffReader, type TrustedPostgresExecutor } from '@heisei/database';
+import { createQuotaReservationId, QuotaCoordinator, verifiedQuotaActorFromIdentity, type CoordinatorResult, type ReportOutcome, type VerifiedQuotaActor } from '@heisei/domain';
+import { parseAndValidateReportPayload, REPORT_MAX_BODY_BYTES, validateIdempotencyKey, type ValidatedReportPayload } from '@heisei/validation';
 import { updateProfileSchema } from '@heisei/validation';
 
 export type DatabaseApiOptions = {
   verifier: JwtVerifier;
   executor: TrustedPostgresExecutor;
+  reportRepository?: ReportRepository;
+  reportQuota?: ReportQuotaBoundary;
+  reportStaffReader?: ReportStaffReader;
+};
+
+export type ReportRepositoryPort = Pick<ReportRepository, 'createReport'>;
+
+export type ReportQuotaBoundary = {
+  recordRequest(actor: VerifiedQuotaActor): Promise<CoordinatorResult<'allowed' | 'rate_limited'>>;
+  reserveAdmission(actor: VerifiedQuotaActor, reservationId: Parameters<QuotaCoordinator['reserveAdmission']>[1]): Promise<CoordinatorResult<'reserved' | 'replayed' | 'idempotency_conflict' | 'rate_limited'>>;
+  beginSave(actor: VerifiedQuotaActor, reservationId: Parameters<QuotaCoordinator['beginSave']>[1]): Promise<CoordinatorResult<'started' | 'replayed' | 'uncertain' | 'unavailable'>>;
+  finalize(actor: VerifiedQuotaActor, reservationId: Parameters<QuotaCoordinator['finalize']>[1], outcome: ReportOutcome): Promise<CoordinatorResult<'committed' | 'cancelled' | 'uncertain' | 'replayed' | 'idempotency_conflict' | 'unavailable'>>;
 };
 
 export type ApiOptions = {
@@ -20,6 +34,10 @@ export type ApiOptions = {
   approveScope?: (actorUserId: string, operation: string) => Promise<boolean>;
   profileStore?: ProfileStore;
   blockStore?: BlockMutationStore;
+  reportRepository?: ReportRepositoryPort;
+  reportQuota?: ReportQuotaBoundary;
+  /** Optional local-only metadata reader; it never decrypts or mutates reports. */
+  reportStaffReader?: ReportStaffReader;
 };
 
 export function createApiApp(authOrOptions?: AuthMiddlewareOptions | ApiOptions) {
@@ -37,7 +55,7 @@ export function createApiApp(authOrOptions?: AuthMiddlewareOptions | ApiOptions)
 
   const candidate = authOrOptions as (AuthMiddlewareOptions & ApiOptions) | undefined;
   const legacyAuth = candidate && 'verifier' in candidate
-    && !('auth' in candidate || 'accessPolicy' in candidate || 'loadBlockRelation' in candidate || 'approveRelationship' in candidate || 'approvePrerequisites' in candidate || 'approveScope' in candidate || 'profileStore' in candidate || 'blockStore' in candidate);
+    && !('auth' in candidate || 'accessPolicy' in candidate || 'loadBlockRelation' in candidate || 'approveRelationship' in candidate || 'approvePrerequisites' in candidate || 'approveScope' in candidate || 'profileStore' in candidate || 'blockStore' in candidate || 'reportRepository' in candidate || 'reportQuota' in candidate || 'reportStaffReader' in candidate);
   const options: ApiOptions = legacyAuth
     ? { auth: candidate }
     : (candidate && 'verifier' in candidate
@@ -183,6 +201,80 @@ export function createApiApp(authOrOptions?: AuthMiddlewareOptions | ApiOptions)
     }
   });
 
+  app.use('/api/v1/reports', authMiddleware(middlewareOptions));
+  app.post('/api/v1/reports', async (c) => {
+    const { identity, claims } = getAuth(c);
+    const requestId = crypto.randomUUID();
+    const headers = { 'Cache-Control': 'no-store', 'X-Request-ID': requestId };
+    const decision = authorize({ context: { identity, claims }, request: { minimumAuthLevel: 2 } });
+    if (!decision.allowed) return c.json({ error: { code: 'forbidden', message: 'Report operation is not allowed' }, requestId }, 403, headers);
+    if (!options.reportRepository || !options.reportQuota) return c.json({ error: { code: 'service_unavailable', message: 'Report service is not configured' }, requestId }, 503, headers);
+    const quotaActor = verifiedQuotaActorFromIdentity(identity.userId);
+    const requestGate = await options.reportQuota.recordRequest(quotaActor).catch(() => ({ result: 'unavailable' as const }));
+    if (requestGate.result === 'unavailable') return c.json({ error: { code: 'service_unavailable', message: 'Report service is unavailable' }, requestId }, 503, headers);
+    if (requestGate.result === 'rate_limited') return c.json({ error: { code: 'rate_limited', message: 'Too many requests' }, requestId }, 429, headers);
+    const contentType = c.req.header('content-type')?.split(';')[0]?.trim().toLowerCase();
+    if (contentType !== 'application/json') return c.json({ error: { code: 'invalid_request', message: 'JSON Content-Type required' }, requestId }, 415, headers);
+    const keyValidation = validateIdempotencyKey(c.req.header('idempotency-key'));
+    if (!keyValidation.ok) return c.json({ error: { code: 'validation_failed', message: 'Idempotency-Key is invalid' }, requestId }, 422, headers);
+    let parsedBody: ValidatedReportPayload;
+    try {
+      const raw = await readLimitedReportBody(c.req.raw);
+      const parsed = parseAndValidateReportPayload(raw);
+      if (!parsed.ok) return c.json({ error: { code: 'validation_failed', message: 'Report payload is invalid' }, requestId }, 422, headers);
+      parsedBody = parsed.value;
+    } catch (error) {
+      return c.json({ error: { code: 'invalid_request', message: error instanceof ReportRequestTooLarge ? 'Report request too large' : 'Valid JSON body is required' }, requestId }, error instanceof ReportRequestTooLarge ? 413 : 400, headers);
+    }
+    const prepared = prepareReportPayloadForRepository(parsedBody);
+    if (!prepared) return c.json({ error: { code: 'service_unavailable', message: 'Report service is unavailable' }, requestId }, 503, headers);
+    const reservationId = createQuotaReservationId();
+    const reserved = await options.reportQuota.reserveAdmission(quotaActor, reservationId).catch(() => ({ result: 'unavailable' as const }));
+    if (reserved.result === 'unavailable') return c.json({ error: { code: 'service_unavailable', message: 'Report service is unavailable' }, requestId }, 503, headers);
+    if (reserved.result === 'rate_limited') return c.json({ error: { code: 'rate_limited', message: 'Too many requests' }, requestId }, 429, headers);
+    if (reserved.result !== 'reserved' && reserved.result !== 'replayed') return c.json({ error: { code: 'conflict', message: 'Report request cannot be accepted' }, requestId }, 409, headers);
+    const started = await options.reportQuota.beginSave(quotaActor, reservationId).catch(() => ({ result: 'unavailable' as const }));
+    if (started.result !== 'started' && started.result !== 'replayed') {
+      await options.reportQuota.finalize(quotaActor, reservationId, 'unknown_commit').catch(() => undefined);
+      return c.json({ error: { code: 'service_unavailable', message: 'Report service is unavailable' }, requestId }, 503, headers);
+    }
+    let result;
+    try {
+      result = await options.reportRepository.createReport(
+        { userId: identity.userId, authSubject: claims.sub, authLevel: identity.authLevel, accountStatus: identity.status },
+        { ...prepared, idempotencyKey: keyValidation.normalized, requestId },
+      );
+    } catch {
+      result = { result: 'unknown_commit' as const };
+    }
+    const quotaOutcome: ReportOutcome = result.result === 'unknown_commit' || result.result === 'unavailable' || result.result === 'db_unavailable' || result.result === 'connection_failure' || result.result === 'lock_timeout' || result.result === 'deadlock' || result.result === 'rollback'
+      ? 'unknown_commit'
+      : result.result;
+    const finalized = await options.reportQuota.finalize(quotaActor, reservationId, quotaOutcome).catch(() => ({ result: 'unavailable' as const }));
+    if (result.result === 'accepted' || result.result === 'replayed' || result.result === 'duplicate' || result.result === 'denied') {
+      if (finalized.result === 'committed' || finalized.result === 'cancelled' || finalized.result === 'replayed') return c.json({ data: { accepted: true }, requestId }, 202, headers);
+      return c.json({ error: { code: 'service_unavailable', message: 'Report service is unavailable' }, requestId }, 503, headers);
+    }
+    if (result.result === 'idempotency_conflict') return c.json({ error: { code: 'conflict', message: 'Report request conflicts with an existing request' }, requestId }, 409, headers);
+    return c.json({ error: { code: 'service_unavailable', message: 'Report service is unavailable' }, requestId }, 503, headers);
+  });
+
+  app.use('/api/v1/staff/reports', authMiddleware(middlewareOptions));
+  app.get('/api/v1/staff/reports', async (c) => {
+    const { identity, claims } = getAuth(c);
+    const requestId = crypto.randomUUID();
+    const headers = { 'Cache-Control': 'no-store', 'X-Request-ID': requestId };
+    const decision = authorize({ context: { identity, claims }, request: { minimumAuthLevel: 3, roles: ['admin'] } });
+    if (!decision.allowed) return c.json({ error: { code: 'forbidden', message: 'Staff report access is not allowed' }, requestId }, 403, headers);
+    if (!options.reportStaffReader) return c.json({ error: { code: 'service_unavailable', message: 'Staff report access is not configured' }, requestId }, 503, headers);
+    try {
+      const reports = await options.reportStaffReader.listAssigned(identity.userId, requestId);
+      return c.json({ data: { reports }, requestId }, 200, headers);
+    } catch {
+      return c.json({ error: { code: 'internal_error', message: 'Staff report lookup failed' }, requestId }, 500, headers);
+    }
+  });
+
   const policy = options.accessPolicy ?? new AccessPolicyService();
   app.use('/api/v1/access', optionalAuthMiddleware(middlewareOptions));
   app.get('/api/v1/access', async (c) => {
@@ -229,11 +321,49 @@ export function createApiAppWithDatabase(options: DatabaseApiOptions) {
     loadBlockRelation: (actor, target) => blockStore.findBetween(actor, target),
     profileStore: new PostgresProfileStore(options.executor),
     blockStore: new PostgresBlockMutationStore(options.executor),
+    reportRepository: options.reportRepository,
+    reportQuota: options.reportQuota,
+    reportStaffReader: options.reportStaffReader,
   });
 }
 
 class ProfileRequestTooLarge extends Error {}
 class RequestTooLarge extends Error {}
+class ReportRequestTooLarge extends Error {}
+
+function prepareReportPayloadForRepository(payload: ValidatedReportPayload) {
+  return prepareReportPayload({
+    targetType: payload.targetType,
+    targetUserId: payload.targetUserId,
+    category: payload.category,
+    categoryVersion: 'category-v1',
+    normalizedDescription: payload.description ?? null,
+    originalDescription: payload.rawDescription ?? null,
+  });
+}
+
+async function readLimitedReportBody(request: Request): Promise<string> {
+  const declared = request.headers.get('content-length');
+  if (declared !== null && (!/^\d+$/u.test(declared) || Number(declared) > REPORT_MAX_BODY_BYTES)) throw new ReportRequestTooLarge();
+  if (!request.body) throw new Error('Missing request body');
+  const reader = request.body.getReader();
+  const parts: Uint8Array[] = [];
+  let bytes = 0;
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    bytes += value.byteLength;
+    if (bytes > REPORT_MAX_BODY_BYTES) {
+      await reader.cancel();
+      throw new ReportRequestTooLarge();
+    }
+    parts.push(value);
+  }
+  const buffer = new Uint8Array(bytes);
+  let offset = 0;
+  for (const part of parts) { buffer.set(part, offset); offset += part.byteLength; }
+  return new TextDecoder('utf-8', { fatal: true }).decode(buffer);
+}
 
 async function readLimitedProfileJson(request: Request, maximumBytes: number): Promise<unknown> {
   const declared = request.headers.get('content-length');
