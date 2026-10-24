@@ -1,6 +1,6 @@
 # HEISEI 隔離staging導入直前確認（DRAFT）
 
-基準RC: PR #61 / `c879751619f78f2b03fe70bdbbaf219c80481234`
+基準RC: PR #61 / `4e470d59d0e430aaec2bde98f268fd48ac9de2f2`
 
 本書は読み取り調査・設定準備・dry-runの記録である。Cloudflare resource、PostgreSQL、
 Secret、remote deploy、課金を実行していない。
