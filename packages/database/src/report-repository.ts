@@ -77,6 +77,10 @@ function validEnvelope(envelope: ReportEnvelope): boolean {
     typeof envelope.ciphertextHex === 'string' && envelope.ciphertextHex.length >= 32 && envelope.ciphertextHex.length % 2 === 0 && HEX.test(envelope.ciphertextHex);
 }
 
+export function validDescriptionEnvelope(rawDescription: string | null, envelope: ReportEnvelope): boolean {
+  return rawDescription === null ? envelope === null : envelope !== null && validEnvelope(envelope);
+}
+
 function validCandidates(candidates: readonly ReportFingerprintCandidate[]): boolean {
   if (candidates.length === 0) return false;
   const versions = new Set<string>();
@@ -90,6 +94,7 @@ function validCandidates(candidates: readonly ReportFingerprintCandidate[]): boo
 
 export interface ReportCryptoAdapter {
   fingerprintVersions: readonly string[];
+  activeFingerprintVersion: string;
   encryptionKeyVersion: string;
   createFingerprint(input: { actorUserId: string; idempotencyKey: string; payload: PreparedReportPayload; keyVersion: string }): Promise<ReportFingerprintCandidate>;
   encryptDescription(input: { description: string; reportId: string; actorUserId: string; targetUserId: string; keyVersion: string }): Promise<ReportEnvelope>;
@@ -119,7 +124,7 @@ type AtomicResultRow = { result: ReportRepositoryResult['result']; report_id: st
 const atomicSql = `
   SELECT * FROM report_create_atomic_v2(
     $1::uuid, $2::varchar, $3::varchar, $4::varchar, $5::uuid,
-    $6::jsonb, $7::text, $8::text, $9::text, $10::text, $11::text, $12::text
+    $6::jsonb, $7::text, $8::text, $9::text, $10::text, $11::text, $12::text, $13::text
   )
 `;
 
@@ -158,7 +163,12 @@ export class ReportRepository {
           targetUserId,
           keyVersion: this.crypto.encryptionKeyVersion,
         });
-      if (!validCandidates(candidates) || !validEnvelope(envelope)) return { result: 'unavailable' };
+      if (!validCandidates(candidates) || !validDescriptionEnvelope(input.rawDescription, envelope) ||
+        !candidates.some((candidate) => candidate.keyVersion === this.crypto.activeFingerprintVersion)) return { result: 'unavailable' };
+      candidates = [
+        ...candidates.filter((candidate) => candidate.keyVersion === this.crypto.activeFingerprintVersion),
+        ...candidates.filter((candidate) => candidate.keyVersion !== this.crypto.activeFingerprintVersion),
+      ];
     } catch {
       return { result: 'unavailable' };
     }
@@ -182,6 +192,7 @@ export class ReportRepository {
           envelope?.algorithmVersion ?? null,
           envelope?.encryptionKeyVersion ?? null,
           envelope?.aadVersion ?? null,
+          this.crypto.activeFingerprintVersion,
           'hmac-sha256-v1',
         ]);
         const row = response.rows[0];

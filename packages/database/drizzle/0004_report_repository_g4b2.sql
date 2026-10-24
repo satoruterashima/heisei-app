@@ -48,6 +48,8 @@ CREATE POLICY audit_logs_report_tx_writer_insert ON audit_logs FOR INSERT
     AND request_id IS NOT NULL
   );
 
+DROP FUNCTION IF EXISTS report_create_atomic_v2(uuid, varchar, varchar, varchar, uuid, jsonb, text, text, text, text, text, text);
+
 CREATE OR REPLACE FUNCTION report_create_atomic_v2(
   p_target_user_id uuid,
   p_category varchar,
@@ -60,6 +62,7 @@ CREATE OR REPLACE FUNCTION report_create_atomic_v2(
   p_algorithm_version text,
   p_encryption_key_version text,
   p_aad_version text,
+  p_active_fingerprint_key_version text,
   p_fingerprint_algorithm_version text
 )
 RETURNS TABLE (result varchar, report_id uuid)
@@ -83,6 +86,7 @@ BEGIN
      OR p_request_id IS NULL OR length(p_request_id) NOT BETWEEN 1 AND 128
      OR p_category IS NULL OR p_category NOT IN ('harassment', 'spam', 'impersonation', 'inappropriate_content', 'fraud', 'other')
      OR p_category_version IS DISTINCT FROM 'category-v1'
+     OR p_active_fingerprint_key_version IS NULL OR length(p_active_fingerprint_key_version) NOT BETWEEN 1 AND 80
      OR p_fingerprint_candidates IS NULL
      OR jsonb_typeof(p_fingerprint_candidates) <> 'array'
      OR jsonb_array_length(p_fingerprint_candidates) = 0
@@ -118,6 +122,14 @@ BEGIN
         AND a.value->>'key_version' = b.value->>'key_version'
      )
   THEN
+    RETURN QUERY SELECT 'unavailable'::varchar, NULL::uuid;
+    RETURN;
+  END IF;
+
+  IF NOT EXISTS (
+    SELECT 1 FROM jsonb_array_elements(p_fingerprint_candidates) AS c(value)
+    WHERE value->>'key_version' = p_active_fingerprint_key_version
+  ) THEN
     RETURN QUERY SELECT 'unavailable'::varchar, NULL::uuid;
     RETURN;
   END IF;
@@ -163,7 +175,7 @@ BEGIN
   -- makes replay independent of later visibility changes without creating an
   -- existence oracle for unknown targets, which never receive a record.
   FOR v_existing IN
-    SELECT ri.id, ri.report_id, ri.payload_fingerprint, ri.fingerprint_key_version
+    SELECT ri.id, ri.report_id, ri.reporter_scope_digest, ri.payload_fingerprint, ri.fingerprint_key_version
       FROM report_idempotency AS ri
      WHERE ri.reporter_user_id = v_actor_user_id
        AND ri.reporter_scope_digest IN (
@@ -176,6 +188,7 @@ BEGIN
         AS candidate(scope_hex text, payload_hex text, key_version text, algorithm_version text)
     LOOP
       IF v_existing.fingerprint_key_version = v_candidate.key_version
+         AND v_existing.reporter_scope_digest = decode(v_candidate.scope_hex, 'hex')
          AND v_existing.payload_fingerprint = decode(v_candidate.payload_hex, 'hex')
       THEN
         PERFORM report_idempotency_touch(v_existing.id);
@@ -223,7 +236,11 @@ BEGIN
    LIMIT 1;
 
   SELECT * INTO v_first_candidate
-    FROM jsonb_to_record(p_fingerprint_candidates->0)
+    FROM jsonb_to_record((
+      SELECT value FROM jsonb_array_elements(p_fingerprint_candidates) AS c(value)
+       WHERE value->>'key_version' = p_active_fingerprint_key_version
+       LIMIT 1
+    ))
       AS candidate(scope_hex text, payload_hex text, key_version text, algorithm_version text);
 
   IF v_pending IS NOT NULL THEN
@@ -272,11 +289,11 @@ BEGIN
 END;
 $$;
 
-ALTER FUNCTION report_create_atomic_v2(uuid, varchar, varchar, varchar, uuid, jsonb, text, text, text, text, text, text)
+ALTER FUNCTION report_create_atomic_v2(uuid, varchar, varchar, varchar, uuid, jsonb, text, text, text, text, text, text, text)
   OWNER TO heisei_report_tx_writer;
-REVOKE ALL ON FUNCTION report_create_atomic_v2(uuid, varchar, varchar, varchar, uuid, jsonb, text, text, text, text, text, text) FROM PUBLIC;
-GRANT EXECUTE ON FUNCTION report_create_atomic_v2(uuid, varchar, varchar, varchar, uuid, jsonb, text, text, text, text, text, text)
+REVOKE ALL ON FUNCTION report_create_atomic_v2(uuid, varchar, varchar, varchar, uuid, jsonb, text, text, text, text, text, text, text) FROM PUBLIC;
+GRANT EXECUTE ON FUNCTION report_create_atomic_v2(uuid, varchar, varchar, varchar, uuid, jsonb, text, text, text, text, text, text, text)
   TO heisei_report_writer;
 
-COMMENT ON FUNCTION report_create_atomic_v2(uuid, varchar, varchar, varchar, uuid, jsonb, text, text, text, text, text, text) IS
+COMMENT ON FUNCTION report_create_atomic_v2(uuid, varchar, varchar, varchar, uuid, jsonb, text, text, text, text, text, text, text) IS
   'G4-B2 local-only report, idempotency, visibility and audit atomic boundary; not a public API';

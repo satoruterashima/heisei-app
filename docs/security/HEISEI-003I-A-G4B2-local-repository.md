@@ -10,6 +10,8 @@ G3の原文と正規化本文を分離し、原文は即時にAES-256-GCMへ渡�
 
 入力境界は`prepareReportPayload`でブランド付き型に変換し、原文と正規化本文の対応が崩れた値はRepositoryへ渡さない。RepositoryとSQL関数の両方で、カテゴリ、HMAC候補（64-byte hex digest、重複versionなし）、AES-GCM envelope（nonce 12 bytes、tagを含むciphertext、許可version）を再検証する。暗号化処理が原文ありに対してNULL envelopeを返した場合は保存しない。
 
+原文なしの場合だけNULL envelopeを許可し、原文ありのNULLまたは原文なしのenvelopeはDB transaction開始前に拒否する。HMAC候補はactive versionを明示的に選択して保存し、再送時はscope digest・payload fingerprint・key versionが同一候補に属する場合だけreplayとする。
+
 ## 保存境界
 
 `0004_report_repository_g4b2.sql` の `report_create_atomic_v2` が、以下を一つのtransactionで処理する。

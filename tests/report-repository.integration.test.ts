@@ -36,6 +36,7 @@ function payload(targetUserId = target, description = 'normalized text') {
 async function adapter(provider: ReportKeyProvider, fingerprintVersions: readonly string[] = ['hmac-v1', 'hmac-v2']): Promise<ReportCryptoAdapter> {
   return {
     fingerprintVersions,
+    activeFingerprintVersion: fingerprintVersions[0] ?? 'hmac-v1',
     encryptionKeyVersion: 'enc-v1',
     createFingerprint: async ({ actorUserId, idempotencyKey, payload: value, keyVersion }) => {
       const result = await createReportFingerprint({
@@ -143,7 +144,7 @@ describe.skipIf(!container || !databaseUrl)('G4-B2 internal report repository on
   it('rejects malformed candidate JSON and envelope before any write', async () => {
     const call = (candidates: string, envelope: readonly (string | null)[]) => executor.withReportWriter!(
       actor, otherTarget, (query) => query.query<{ result: string; report_id: string | null }>(
-        `SELECT * FROM report_create_atomic_v2($1::uuid, 'other', 'category-v1', 'g4b2-invalid', $2::uuid, $3::jsonb, $4::text, $5::text, $6::text, $7::text, $8::text, 'hmac-sha256-v1')`,
+        `SELECT * FROM report_create_atomic_v2($1::uuid, 'other', 'category-v1', 'g4b2-invalid', $2::uuid, $3::jsonb, $4::text, $5::text, $6::text, $7::text, $8::text, 'hmac-v1', 'hmac-sha256-v1')`,
         [otherTarget, '00000000-0000-4000-8000-000000000099', candidates, ...envelope],
       ),
       'integration-subject-1',
