@@ -9,7 +9,7 @@
     "setup:cloud": "bash scripts/setup-cloud.sh",
     "test": "vitest run",
     "test:do": "vitest run --config vitest.do.config.mts",
-    "build:check": "WRANGLER_SEND_METRICS=false WRANGLER_LOG_PATH=.wrangler/logs pnpm --config.verifyDepsBeforeRun=warn --filter @heisei/api exec wrangler deploy --dry-run --outdir .wrangler/build"
+    "build:check": "node scripts/build-check.mjs"
   },
   "packageManager": "pnpm@11.20.0",
   "devDependencies": {

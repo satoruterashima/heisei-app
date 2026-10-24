@@ -3,26 +3,16 @@ import {
   DurableObjectQuotaStore,
   QuotaCoordinator,
   QuotaEngine,
-  type QuotaConfig,
+  quotaConfigFromSource,
   type VerifiedQuotaActor,
 } from '@heisei/domain';
 
 export interface QuotaDoEnv {
   QUOTA_ACTOR: DurableObjectNamespace<QuotaActor>;
+  [name: string]: string | DurableObjectNamespace<QuotaActor> | undefined;
 }
 
-const FIXTURE_CONFIG: QuotaConfig = {
-  shortWindowMs: 100,
-  shortRequestLimit: 2,
-  longWindowMs: 1_000,
-  longRequestLimit: 4,
-  admissionWindowMs: 1_000,
-  newAdmissionLimit: 4,
-  reservationTtlMs: 50,
-  maxActiveReservations: 3,
-  stateRetentionMs: 200,
-};
-const STORAGE_OPTIONS = { maxStoredReservations: 4 };
+const MAX_STORED_RESERVATIONS = 256;
 
 /** Local-runtime-only actor. It has no public fetch route for quota operations. */
 export class QuotaActor extends DurableObject<QuotaDoEnv> {
@@ -32,9 +22,9 @@ export class QuotaActor extends DurableObject<QuotaDoEnv> {
       this.ctx.storage,
       // The DO input gate serializes each RPC turn for this actor instance.
       { run: async <T>(operation: () => Promise<T>): Promise<T> => operation() },
-      STORAGE_OPTIONS,
+      { maxStoredReservations: MAX_STORED_RESERVATIONS },
     );
-    return new QuotaCoordinator(new QuotaEngine(FIXTURE_CONFIG), store, { now: () => Date.now() });
+    return new QuotaCoordinator(new QuotaEngine(quotaConfigFromSource(this.env as unknown as Record<string, string | undefined>)), store, { now: () => Date.now() });
   }
 
   async recordRequest(actor: VerifiedQuotaActor) {

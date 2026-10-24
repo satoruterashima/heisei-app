@@ -5,11 +5,20 @@ REVOKE ALL ON FUNCTION report_create_atomic(uuid, varchar, varchar, varchar) FRO
 
 REVOKE ALL ON reports, report_idempotency, audit_logs FROM heisei_report_tx_writer;
 REVOKE ALL ON reports, report_idempotency, audit_logs FROM heisei_report_reconciler;
-GRANT SELECT (id, auth_subject, auth_level, account_status, profile_visibility) ON profiles TO heisei_report_tx_writer;
+-- PostgreSQL checks the referenced relation privileges while planning a query
+-- against FORCE-RLS reports (including its foreign keys and staff policy).
+-- The role is NOLOGIN and the row policies below still limit the visible
+-- profiles to the actor and a public target.
+GRANT SELECT ON profiles TO heisei_report_tx_writer;
 GRANT SELECT ON blocks TO heisei_report_tx_writer;
 GRANT SELECT ON reports, report_idempotency TO heisei_report_tx_writer;
 GRANT INSERT ON reports, report_idempotency, audit_logs TO heisei_report_tx_writer;
 GRANT EXECUTE ON FUNCTION report_idempotency_touch(uuid) TO heisei_report_tx_writer;
+
+-- The reports staff policy references assignments.  This narrow column grant
+-- is required even when the policy branch is not selected for tx_writer.
+GRANT SELECT (report_id, staff_user_id, revoked_at)
+  ON report_staff_assignments TO heisei_report_tx_writer;
 
 GRANT SELECT ON report_idempotency TO heisei_report_reconciler;
 

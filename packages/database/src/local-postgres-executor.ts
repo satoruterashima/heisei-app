@@ -10,6 +10,7 @@ import { TransactionRollbackError, UnknownCommitError } from './report-repositor
 export type LocalPostgresExecutorOptions = PoolConfig & {
   pool?: Pool;
   ownsPool?: boolean;
+  clientFactory?: () => Promise<ConnectedClient>;
 };
 
 const DEFAULT_ROLES = {
@@ -35,7 +36,11 @@ function assertSettingName(name: string): void {
   if (!/^app\.(?:user_id|auth_subject|visibility_target_id|staff_scope)$/u.test(name)) throw new Error('invalid RLS setting');
 }
 
-function queryAdapter(client: PoolClient): PostgresQueryExecutor {
+type ConnectedClient = Pick<PoolClient, 'query'> & {
+  release(error?: Error): void | Promise<void>;
+};
+
+function queryAdapter(client: ConnectedClient): PostgresQueryExecutor {
   return {
     query: async <Row extends Record<string, unknown> = Record<string, unknown>>(
       text: string,
@@ -48,7 +53,8 @@ function queryAdapter(client: PoolClient): PostgresQueryExecutor {
 }
 
 export class LocalTrustedPostgresExecutor implements TrustedPostgresExecutor {
-  private readonly pool: Pool;
+  private readonly pool?: Pool;
+  private readonly clientFactory?: () => Promise<ConnectedClient>;
   private readonly ownsPool: boolean;
   private readonly roles: FixedRoles;
 
@@ -65,6 +71,10 @@ export class LocalTrustedPostgresExecutor implements TrustedPostgresExecutor {
     if (options.pool) {
       this.pool = options.pool;
       this.ownsPool = options.ownsPool ?? false;
+      this.clientFactory = options.clientFactory;
+    } else if (options.clientFactory) {
+      this.clientFactory = options.clientFactory;
+      this.ownsPool = false;
     } else {
       throw new Error('A local pg Pool must be supplied by createLocalTrustedPostgresExecutor');
     }
@@ -128,7 +138,7 @@ export class LocalTrustedPostgresExecutor implements TrustedPostgresExecutor {
   }
 
   async close(): Promise<void> {
-    if (this.ownsPool) await this.pool.end();
+    if (this.ownsPool && this.pool) await this.pool.end();
   }
 
   private async withTransaction<T>(
@@ -137,7 +147,7 @@ export class LocalTrustedPostgresExecutor implements TrustedPostgresExecutor {
     operation: (query: PostgresQueryExecutor) => Promise<T>,
     wrapRollback = false,
   ): Promise<T> {
-    const client = await this.pool.connect();
+    const client = this.clientFactory ? await this.clientFactory() : await this.pool!.connect();
     let failed = false;
     try {
       await client.query('BEGIN');
@@ -167,7 +177,7 @@ export class LocalTrustedPostgresExecutor implements TrustedPostgresExecutor {
     } finally {
       // SET LOCAL and the role both disappear at transaction end. Mark a
       // broken client so pg does not return a potentially dirty socket.
-      client.release(failed ? new Error('transaction failed') : undefined);
+      await client.release(failed ? new Error('transaction failed') : undefined);
     }
   }
 
@@ -183,4 +193,24 @@ export async function createLocalTrustedPostgresExecutor(
   const { Pool } = await import('pg');
   const pool = new Pool(options);
   return new LocalTrustedPostgresExecutor({ ...options, pool, ownsPool: true });
+}
+
+/**
+ * Hyperdrive adapter: one node-postgres Client per transaction. Hyperdrive
+ * owns the remote pool, so this avoids retaining a Worker-isolate Pool across
+ * requests while preserving the trusted transaction boundary above.
+ */
+export async function createHyperdriveTrustedPostgresExecutor(
+  options: Omit<LocalPostgresExecutorOptions, 'pool' | 'ownsPool' | 'clientFactory'>,
+): Promise<LocalTrustedPostgresExecutor> {
+  const { Client } = await import('pg');
+  const clientFactory = async (): Promise<ConnectedClient> => {
+    const client = new Client(options);
+    await client.connect();
+    return {
+      query: client.query.bind(client),
+      release: async () => { await client.end(); },
+    };
+  };
+  return new LocalTrustedPostgresExecutor({ ...options, clientFactory });
 }

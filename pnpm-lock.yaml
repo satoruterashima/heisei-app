@@ -137,7 +137,10 @@ importers:
         version: link:../auth
       drizzle-orm:
         specifier: ^0.30.10
-        version: 0.30.10(@cloudflare/workers-types@4.20260702.1)(@types/pg@8.10.9)(@types/react@18.3.31)(pg@8.13.1)(react@18.3.1)
+        version: 0.30.10(@cloudflare/workers-types@4.20260702.1)(@types/pg@8.10.9)(@types/react@18.3.31)(pg@8.16.3)(react@18.3.1)
+      pg:
+        specifier: 8.16.3
+        version: 8.16.3
     devDependencies:
       '@types/pg':
         specifier: 8.10.9
@@ -145,9 +148,6 @@ importers:
       drizzle-kit:
         specifier: ^0.20.17
         version: 0.20.18(supports-color@8.1.1)
-      pg:
-        specifier: 8.13.1
-        version: 8.13.1
       typescript:
         specifier: ^5.4.5
         version: 5.9.3
@@ -4913,17 +4913,17 @@ packages:
     resolution: {integrity: sha512-o2XFanIMy/3+mThw69O8d4n1E5zsLhdO+OPqswezu7Z5ekP4hYDqlDjlmOpYMbzY2Br0ufCwJLdDIXeNVwcWFg==}
     engines: {node: '>=10'}
 
-  pg@8.13.1:
-    resolution: {integrity: sha512-OUir1A0rPNZlX//c7ksiu7crsGZTKSOXJPgtNiHGIlC9H0lO+NC6ZDYksSgBYY/thSWhnSRBv8w1lieNNGATNQ==}
-    engines: {node: '>= 8.0.0'}
+  pg@8.16.3:
+    resolution: {integrity: sha512-enxc1h0jA/aq5oSDMvqyW3q89ra6XIIDZgCX9vkMrnz5DFTw/Ny3Li2lFQ+pt3L6MCgm/5o2o8HW9hiJji+xvw==}
+    engines: {node: '>= 16.0.0'}
     peerDependencies:
       pg-native: '>=3.0.1'
     peerDependenciesMeta:
       pg-native:
         optional: true
 
-  pgpass@1.0.6:
-    resolution: {integrity: sha512-lqIfH7bdgsxHAY/ZnUOwm+aCFKrsHBDhSFuk9O0B9uCqJAIkrKTo/+LQqLPLUS4e04+jCmQVikxE3QipH5chPw==}
+  pgpass@1.0.5:
+    resolution: {integrity: sha512-FdW9r/jQZhSeohs1Z3sI1yxFQNFvMcnmfuj4WBMUTxOrAyLMaTcE1aAMBiTlbMNaXvBCQuVi0R7hd8udDSP7ug==}
 
   picocolors@1.1.1:
     resolution: {integrity: sha512-xceH2snhtb5M9liqDsmEw56le376mTZkEX/jEb/RxNFyegNul7eNslCXP9FDj/Lcu0X8KEyMceP2ntpaHrDEVA==}
@@ -5437,6 +5437,10 @@ packages:
   sourcemap-codec@1.4.8:
     resolution: {integrity: sha512-9NykojV5Uih4lgo5So5dtw+f0JgJX30KCNI8gwhz2J9A15wD0Ml6tjHKwf6fTSa6fAdVBdZeNOs9eJ71qCk8vA==}
     deprecated: Please use @jridgewell/sourcemap-codec instead
+
+  split2@4.2.0:
+    resolution: {integrity: sha512-UcjcJOWknrNkF6PLX83qcHM6KHgVKNkV62Y8a5uYDVv9ydGQVwAHMKqHdJje1VTWpljG0WYpCDhrCdAOYH4TWg==}
+    engines: {node: '>= 10.x'}
 
   sprintf-js@1.0.3:
     resolution: {integrity: sha512-D9cPgkvLlV3t3IzL0D0YLvGA9Ahk4PcvVwUbN0dSGr1aP0Nrt4AEnTUbuGvquEC0mA64Gqt1fzirlRs5ibXx8g==}
@@ -9479,12 +9483,12 @@ snapshots:
     transitivePeerDependencies:
       - supports-color
 
-  drizzle-orm@0.30.10(@cloudflare/workers-types@4.20260702.1)(@types/pg@8.10.9)(@types/react@18.3.31)(pg@8.13.1)(react@18.3.1):
+  drizzle-orm@0.30.10(@cloudflare/workers-types@4.20260702.1)(@types/pg@8.10.9)(@types/react@18.3.31)(pg@8.16.3)(react@18.3.1):
     optionalDependencies:
       '@cloudflare/workers-types': 4.20260702.1
       '@types/pg': 8.10.9
       '@types/react': 18.3.31
-      pg: 8.13.1
+      pg: 8.16.3
       react: 18.3.1
 
   dunder-proto@1.0.1:
@@ -11513,9 +11517,9 @@ snapshots:
 
   pg-numeric@1.0.2: {}
 
-  pg-pool@3.14.0(pg@8.13.1):
+  pg-pool@3.14.0(pg@8.16.3):
     dependencies:
-      pg: 8.13.1
+      pg: 8.16.3
 
   pg-protocol@1.16.1: {}
 
@@ -11537,17 +11541,19 @@ snapshots:
       postgres-interval: 3.0.0
       postgres-range: 1.1.4
 
-  pg@8.13.1:
+  pg@8.16.3:
     dependencies:
       pg-connection-string: 2.14.1
-      pg-pool: 3.14.0(pg@8.13.1)
+      pg-pool: 3.14.0(pg@8.16.3)
       pg-protocol: 1.16.1
       pg-types: 2.2.0
-      pgpass: 1.0.6
+      pgpass: 1.0.5
     optionalDependencies:
       pg-cloudflare: 1.4.1
 
-  pgpass@1.0.6: {}
+  pgpass@1.0.5:
+    dependencies:
+      split2: 4.2.0
 
   picocolors@1.1.1: {}
 
@@ -12182,6 +12188,8 @@ snapshots:
   source-map@0.7.6: {}
 
   sourcemap-codec@1.4.8: {}
+
+  split2@4.2.0: {}
 
   sprintf-js@1.0.3: {}
 
