@@ -129,6 +129,15 @@ describe('QuotaEngine and local coordinator', () => {
     expect(unwrap(await coordinator.finalize(actor, r1, 'unknown_commit'))).toBe('uncertain');
   });
 
+  it('releases an in-flight reservation when the repository definitively replays or duplicates', async () => {
+    const { coordinator, store } = setup();
+    expect(unwrap(await coordinator.reserveAdmission(actor, r1))).toBe('reserved');
+    expect(unwrap(await coordinator.beginSave(actor, r1))).toBe('started');
+    expect(unwrap(await coordinator.finalize(actor, r1, 'replayed'))).toBe('cancelled');
+    expect((await store.load(actor.userId))?.uncertainAdmissionCount).toBe(0);
+    expect(unwrap(await coordinator.reserveAdmission(actor, r2))).toBe('reserved');
+  });
+
   it('keeps unresolved reservations across an admission window reset', async () => {
     const smallConfig = { ...config, admissionWindowMs: 10, newAdmissionLimit: 1 };
     const clock = new FixtureClock();

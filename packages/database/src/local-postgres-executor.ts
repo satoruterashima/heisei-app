@@ -18,9 +18,10 @@ const DEFAULT_ROLES = {
   profileWriter: 'heisei_profile_writer',
   blockWriter: 'heisei_block_writer',
   reportWriter: 'heisei_report_writer',
+  reportReconciler: 'heisei_report_reconciler',
   visibilityReader: 'heisei_visibility_reader',
 } as const;
-type FixedRoles = { app: string; identityWriter: string; profileWriter: string; blockWriter: string; reportWriter: string; visibilityReader: string };
+type FixedRoles = { app: string; identityWriter: string; profileWriter: string; blockWriter: string; reportWriter: string; reportReconciler: string; visibilityReader: string };
 
 const SAFE_ROLE = /^[a-z_][a-z0-9_]*$/u;
 
@@ -57,6 +58,7 @@ export class LocalTrustedPostgresExecutor implements TrustedPostgresExecutor {
     quoteRole(this.roles.profileWriter);
     quoteRole(this.roles.blockWriter);
     quoteRole(this.roles.reportWriter);
+    quoteRole(this.roles.reportReconciler);
     quoteRole(this.roles.visibilityReader);
     if (options.pool) {
       this.pool = options.pool;
@@ -111,6 +113,11 @@ export class LocalTrustedPostgresExecutor implements TrustedPostgresExecutor {
       [['app.user_id', actorUserId], ['app.visibility_target_id', targetUserId]],
       operation,
     );
+  }
+
+  async withReportReconciler<T>(userId: string, operation: (query: PostgresQueryExecutor) => Promise<T>): Promise<T> {
+    if (!this.isUuid(userId)) throw new Error('invalid reconciliation actor');
+    return this.withTransaction(this.roles.reportReconciler, [['app.user_id', userId]], operation);
   }
 
   async close(): Promise<void> {

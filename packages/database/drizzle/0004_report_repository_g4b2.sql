@@ -4,11 +4,14 @@
 REVOKE ALL ON FUNCTION report_create_atomic(uuid, varchar, varchar, varchar) FROM heisei_report_writer;
 
 REVOKE ALL ON reports, report_idempotency, audit_logs FROM heisei_report_tx_writer;
+REVOKE ALL ON reports, report_idempotency, audit_logs FROM heisei_report_reconciler;
 GRANT SELECT (id, auth_subject, auth_level, account_status, profile_visibility) ON profiles TO heisei_report_tx_writer;
 GRANT SELECT ON blocks TO heisei_report_tx_writer;
 GRANT SELECT ON reports, report_idempotency TO heisei_report_tx_writer;
 GRANT INSERT ON reports, report_idempotency, audit_logs TO heisei_report_tx_writer;
 GRANT EXECUTE ON FUNCTION report_idempotency_touch(uuid) TO heisei_report_tx_writer;
+
+GRANT SELECT ON report_idempotency TO heisei_report_reconciler;
 
 DROP POLICY IF EXISTS reports_report_tx_writer_insert ON reports;
 CREATE POLICY reports_report_tx_writer_insert ON reports FOR INSERT
@@ -34,6 +37,13 @@ DROP POLICY IF EXISTS report_idempotency_tx_writer_insert ON report_idempotency;
 CREATE POLICY report_idempotency_tx_writer_insert ON report_idempotency FOR INSERT
   WITH CHECK (
     current_user = 'heisei_report_tx_writer'
+    AND reporter_user_id::text = current_setting('app.user_id', true)
+  );
+
+DROP POLICY IF EXISTS report_idempotency_reconciler_select ON report_idempotency;
+CREATE POLICY report_idempotency_reconciler_select ON report_idempotency FOR SELECT
+  USING (
+    current_user = 'heisei_report_reconciler'
     AND reporter_user_id::text = current_setting('app.user_id', true)
   );
 

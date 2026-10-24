@@ -57,7 +57,7 @@ psql_file < "$repo_root/packages/database/drizzle/roles.sql" >/dev/null
 psql_file < "$repo_root/packages/database/drizzle/0001_profile_visibility.sql" >/dev/null
 psql_file <<'SQL' >/dev/null
 CREATE ROLE heisei_test_login LOGIN PASSWORD 'local-test' NOSUPERUSER NOBYPASSRLS;
-GRANT heisei_app, heisei_identity_writer, heisei_profile_writer, heisei_block_writer, heisei_visibility_reader, heisei_report_writer TO heisei_test_login;
+GRANT heisei_app, heisei_identity_writer, heisei_profile_writer, heisei_block_writer, heisei_visibility_reader, heisei_report_writer, heisei_report_reconciler TO heisei_test_login;
 CREATE ROLE heisei_app_login LOGIN PASSWORD 'local-app' NOSUPERUSER NOBYPASSRLS;
 CREATE ROLE heisei_identity_login LOGIN PASSWORD 'local-identity' NOSUPERUSER NOBYPASSRLS;
 GRANT heisei_app TO heisei_app_login;
@@ -90,4 +90,5 @@ export HEISEI_LOCAL_PG_URL="postgresql://heisei_test_login:local-test@127.0.0.1:
 # Use the runner's existing Corepack/pnpm cache; never assume /workspace exists.
 pnpm --config.verifyDepsBeforeRun=warn exec vitest run tests/postgres-api.integration.test.ts
 pnpm --config.verifyDepsBeforeRun=warn exec vitest run tests/report-repository.integration.test.ts
+pnpm --config.verifyDepsBeforeRun=warn exec vitest run tests/report-reconciliation.integration.test.ts
 echo "PASS: real JWT → Hono → isolated PostgreSQL integration"

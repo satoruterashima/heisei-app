@@ -22,6 +22,8 @@ export interface TrustedPostgresExecutor {
   withBlockWriter?<T>(userId: string, operation: (query: PostgresQueryExecutor) => Promise<T>): Promise<T>;
   /** Internal report boundary; caller cannot choose the database role or GUC values. */
   withReportWriter?<T>(userId: string, targetUserId: string, operation: (query: PostgresQueryExecutor) => Promise<T>, authSubject?: string): Promise<T>;
+  /** Read-only actor-bound reconciliation boundary; it cannot write reports or audit rows. */
+  withReportReconciler?<T>(userId: string, operation: (query: PostgresQueryExecutor) => Promise<T>): Promise<T>;
   withVisibilityReader?<T>(actorUserId: string, targetUserId: string, operation: (query: PostgresQueryExecutor) => Promise<T>): Promise<T>;
 }
 

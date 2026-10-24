@@ -3,8 +3,11 @@ import { execFileSync } from 'node:child_process';
 import { evaluateUserVisibility, JwksJwtVerifier } from '../packages/auth/src/index.js';
 import { createApiAppWithDatabase } from '../apps/api/src/index.js';
 import { PostgresBlockRelationStore, PostgresProfileStore, PostgresIdentityRecordStore, PostgresUserVisibilityRepository } from '../packages/database/src/index.js';
+import { ReportRepository, type ReportCryptoAdapter } from '../packages/database/src/index.js';
 import { createLocalTrustedPostgresExecutor } from '../packages/database/src/local-postgres-executor.js';
 import type { TrustedPostgresExecutor } from '../packages/database/src/index.js';
+import { FixtureReportKeyProvider, createReportFingerprint, type ValidatedReportPayload } from '../packages/validation/src/index.js';
+import { DurableObjectQuotaStore, LocalDurableQuotaNamespace, QuotaCoordinator, QuotaEngine, verifiedQuotaActorFromIdentity } from '../packages/domain/src/index.js';
 
 const container = process.env.HEISEI_LOCAL_PG_CONTAINER;
 const databaseUrl = process.env.HEISEI_LOCAL_PG_URL;
@@ -15,6 +18,33 @@ const targetId = '00000000-0000-4000-8000-000000000002';
 function adminSql(sql: string): string {
   if (!container) throw new Error('local database container is required');
   return execFileSync('docker', ['exec', '-i', container, 'psql', '-h', '127.0.0.1', '-q', '-A', '-t', '-v', 'ON_ERROR_STOP=1', '-U', 'postgres', '-d', 'heisei_local'], { input: sql, encoding: 'utf8' }).trim();
+}
+
+function base64UrlToHex(value: string): string {
+  const base64 = value.replace(/-/gu, '+').replace(/_/gu, '/');
+  const binary = atob(base64 + '='.repeat((4 - (base64.length % 4)) % 4));
+  return Array.from(binary, (character) => character.charCodeAt(0).toString(16).padStart(2, '0')).join('');
+}
+
+async function localReportCrypto(): Promise<ReportCryptoAdapter> {
+  const provider = await FixtureReportKeyProvider.create(['hmac-v1', 'enc-v1']);
+  return {
+    fingerprintVersions: ['hmac-v1'],
+    activeFingerprintVersion: 'hmac-v1',
+    encryptionKeyVersion: 'enc-v1',
+    createFingerprint: async ({ actorUserId, idempotencyKey, payload, keyVersion }) => {
+      const fingerprint = await createReportFingerprint({ reporterUserId: actorUserId, idempotencyKey, payload: payload as ValidatedReportPayload, keyVersion }, provider);
+      return { scopeHex: base64UrlToHex(fingerprint.reporterScope), payloadHex: base64UrlToHex(fingerprint.payloadFingerprint), keyVersion: fingerprint.keyVersion, algorithmVersion: fingerprint.scheme };
+    },
+    encryptDescription: async () => { throw new Error('description encryption is not used by this no-description fixture'); },
+  };
+}
+
+function localReportQuota(): QuotaCoordinator {
+  const actor = verifiedQuotaActorFromIdentity(userId);
+  const namespace = new LocalDurableQuotaNamespace();
+  const storage = namespace.getByName(actor.userId);
+  return new QuotaCoordinator(new QuotaEngine({ shortWindowMs: 100, shortRequestLimit: 100, longWindowMs: 10_000, longRequestLimit: 100, admissionWindowMs: 10_000, newAdmissionLimit: 20, reservationTtlMs: 5_000, maxActiveReservations: 20, stateRetentionMs: 20_000 }), new DurableObjectQuotaStore(actor, storage, storage, { maxStoredReservations: 32 }), { now: () => Date.now() });
 }
 
 async function signedToken(tokenSubject = subject): Promise<{ verifier: JwksJwtVerifier; token: string }> {
@@ -151,6 +181,30 @@ describe.skipIf(!container || !databaseUrl)('real JWT → Hono → isolated Post
   it('reads both block directions through the same isolated executor', async () => {
     const result = await new PostgresBlockRelationStore(executor).findBetween(userId, targetId);
     expect(result).toEqual({ blockedByActor: true, blockedByTarget: true });
+  });
+
+  it('runs report POST through real JWT, quota, Hono, repository, and PostgreSQL', async () => {
+    adminSql("DELETE FROM report_idempotency; DELETE FROM reports; DELETE FROM audit_logs WHERE rule_version = '003i-g4b2';");
+    const { verifier, token } = await signedToken();
+    const app = createApiAppWithDatabase({
+      verifier,
+      executor,
+      reportRepository: new ReportRepository(executor, await localReportCrypto()),
+      reportQuota: localReportQuota(),
+    });
+    const body = { targetType: 'user', targetUserId: '00000000-0000-4000-8000-000000000003', category: 'other' };
+    const headers = { authorization: `Bearer ${token}`, 'content-type': 'application/json', 'idempotency-key': '00000000-0000-4000-8000-000000000020' };
+    const first = await app.request('/api/v1/reports', { method: 'POST', headers, body: JSON.stringify(body) });
+    const replay = await app.request('/api/v1/reports', { method: 'POST', headers, body: JSON.stringify(body) });
+    const conflict = await app.request('/api/v1/reports', { method: 'POST', headers, body: JSON.stringify({ ...body, category: 'spam' }) });
+    const unknown = await app.request('/api/v1/reports', { method: 'POST', headers: { ...headers, 'idempotency-key': '00000000-0000-4000-8000-000000000021' }, body: JSON.stringify({ ...body, targetUserId: '00000000-0000-4000-8000-000000000099' }) });
+    expect(first.status).toBe(202);
+    expect(replay.status).toBe(202);
+    expect(conflict.status).toBe(409);
+    expect(unknown.status).toBe(202);
+    expect(JSON.stringify(await unknown.json())).not.toContain('00000000-0000-4000-8000-000000000099');
+    expect(adminSql(`SELECT count(*) FROM reports WHERE reporter_user_id = '${userId}'::uuid`)).toBe('1');
+    expect(adminSql(`SELECT count(*) FROM audit_logs WHERE actor_user_id = '${userId}'::uuid AND action = 'report.create'`)).toBe('1');
   });
 
   it('creates and removes only the actor-owned block through real JWT and RLS', async () => {

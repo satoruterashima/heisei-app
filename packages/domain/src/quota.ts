@@ -240,6 +240,14 @@ export class QuotaEngine {
       state.updatedAt = now;
       return { state, result: 'committed' };
     }
+    // These outcomes are definitive: the repository completed without a new
+    // admission. They may safely release a reservation even after beginSave.
+    if (outcome === 'replayed' || outcome === 'duplicate' || outcome === 'denied' || outcome === 'idempotency_conflict') {
+      reservation.status = 'cancelled';
+      state.reservedAdmissionCount = Math.max(0, state.reservedAdmissionCount - 1);
+      state.updatedAt = now;
+      return { state, result: 'cancelled' };
+    }
     if (reservation.status === 'in_flight') {
       reservation.status = 'uncertain';
       state.reservedAdmissionCount = Math.max(0, state.reservedAdmissionCount - 1);
@@ -398,6 +406,11 @@ export class InMemoryFixtureStore implements QuotaStore {
 
 export function fixtureQuotaActor(userId: string): VerifiedQuotaActor {
   return { userId: normalizeActorId(userId) } as VerifiedQuotaActor;
+}
+
+/** Creates the quota actor token from a trusted server-side identity. */
+export function verifiedQuotaActorFromIdentity(userId: string): VerifiedQuotaActor {
+  return fixtureQuotaActor(userId);
 }
 
 export function fixtureReservationId(value: string): QuotaReservationId {

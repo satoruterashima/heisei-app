@@ -31,6 +31,9 @@ BEGIN
   IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'heisei_report_tx_writer') THEN
     CREATE ROLE heisei_report_tx_writer NOLOGIN NOSUPERUSER NOBYPASSRLS;
   END IF;
+  IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'heisei_report_reconciler') THEN
+    CREATE ROLE heisei_report_reconciler NOLOGIN NOSUPERUSER NOBYPASSRLS;
+  END IF;
   IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'heisei_report_ttl_writer') THEN
     CREATE ROLE heisei_report_ttl_writer NOLOGIN NOSUPERUSER NOBYPASSRLS;
   END IF;
@@ -57,6 +60,7 @@ ALTER ROLE heisei_block_writer NOSUPERUSER NOBYPASSRLS NOLOGIN;
 ALTER ROLE heisei_visibility_reader NOSUPERUSER NOBYPASSRLS NOLOGIN;
 ALTER ROLE heisei_report_writer NOSUPERUSER NOBYPASSRLS NOLOGIN;
 ALTER ROLE heisei_report_tx_writer NOSUPERUSER NOBYPASSRLS NOLOGIN;
+ALTER ROLE heisei_report_reconciler NOSUPERUSER NOBYPASSRLS NOLOGIN;
 ALTER ROLE heisei_report_ttl_writer NOSUPERUSER NOBYPASSRLS NOLOGIN;
 
 REVOKE ALL ON profiles, user_verifications, user_settings, blocks, audit_logs FROM heisei_app;
@@ -102,6 +106,14 @@ BEGIN
     EXECUTE 'GRANT UPDATE (last_used_at, expires_at) ON report_idempotency TO heisei_report_ttl_writer';
     EXECUTE 'REVOKE ALL ON FUNCTION report_idempotency_touch(uuid) FROM PUBLIC';
     EXECUTE 'GRANT EXECUTE ON FUNCTION report_idempotency_touch(uuid) TO heisei_report_writer';
+  END IF;
+END $$;
+
+DO $$
+BEGIN
+  IF to_regclass('public.report_idempotency') IS NOT NULL THEN
+    EXECUTE 'REVOKE ALL ON reports, report_idempotency, audit_logs FROM heisei_report_reconciler';
+    EXECUTE 'GRANT SELECT ON report_idempotency TO heisei_report_reconciler';
   END IF;
 END $$;
 
