@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { SecretReportKeyProvider, ReportCryptoError } from '../packages/validation/src/index.js';
 import { productionPostgresSettings } from '../packages/database/src/index.js';
-import { planReportRetention, quotaConfigFromSource } from '../packages/domain/src/index.js';
+import { executeLocalRetention, planAuditRetention, planReportRetention, quotaConfigFromSource } from '../packages/domain/src/index.js';
 
 const quotaSource = Object.fromEntries([
   ['SHORT_WINDOW_MS', '100'], ['SHORT_REQUEST_LIMIT', '2'], ['LONG_WINDOW_MS', '1000'], ['LONG_REQUEST_LIMIT', '4'],
@@ -40,11 +40,25 @@ describe('production configuration boundaries', () => {
   });
 
   it('plans retention but never deletes legal-hold or unproven records', () => {
-    const result = planReportRetention({ nowMs: 31 * 86_400_000, retentionDays: 30, candidates: [
-      { reportId: 'old', createdAtMs: 0, status: 'pending', legalHold: false },
-      { reportId: 'held', createdAtMs: 0, status: 'pending', legalHold: true },
+    const result = planReportRetention({ nowMs: 121 * 86_400_000, retentionDays: 90, candidates: [
+      { reportId: 'old', createdAtMs: 0, reviewClosedAtMs: 0, status: 'closed', legalHold: false },
+      { reportId: 'pending', createdAtMs: 0, reviewClosedAtMs: null, status: 'pending', legalHold: false },
+      { reportId: 'held', createdAtMs: 0, reviewClosedAtMs: 0, status: 'closed', legalHold: true },
     ] });
-    expect(result).toEqual([{ action: 'delete', reportId: 'old' }, { action: 'retain', reportId: 'held', reason: 'legal_hold' }]);
-    expect(planReportRetention({ nowMs: 1, retentionDays: undefined, candidates: [{ reportId: 'x', createdAtMs: 0, status: 'pending', legalHold: false }] })[0]).toMatchObject({ action: 'retain', reason: 'invalid_evidence' });
+    expect(result).toEqual([{ action: 'delete', reportId: 'old' }, { action: 'retain', reportId: 'pending', reason: 'pending' }, { action: 'retain', reportId: 'held', reason: 'legal_hold' }]);
+    expect(planReportRetention({ nowMs: 1, retentionDays: undefined, candidates: [{ reportId: 'x', createdAtMs: 0, reviewClosedAtMs: 0, status: 'closed', legalHold: false }] })[0]).toMatchObject({ action: 'retain', reason: 'invalid_evidence' });
+    expect(planAuditRetention({ nowMs: 366 * 86_400_000, retentionDays: 365, candidates: [{ auditId: 'a', createdAtMs: 0, legalHold: false }] })).toEqual([{ action: 'delete', auditId: 'a' }]);
+  });
+
+  it('runs only the local atomic deletion boundary and records the request id', async () => {
+    const applied: unknown[] = [];
+    const result = await executeLocalRetention({ nowMs: 121 * 86_400_000, reportRetentionDays: 90, auditRetentionDays: 365, requestId: 'local-retention-1', store: {
+      listReports: async () => [{ reportId: 'old', createdAtMs: 0, reviewClosedAtMs: 0, status: 'closed', legalHold: false }],
+      listAuditLogs: async () => [{ auditId: 'audit-old', createdAtMs: 0, legalHold: false }],
+      applyDeletion: async (input) => { applied.push(input); },
+    } });
+    expect(result).toEqual({ reportIds: ['old'], auditIds: [] });
+    expect(applied).toHaveLength(1);
+    await expect(executeLocalRetention({ nowMs: 0, reportRetentionDays: 90, auditRetentionDays: 365, requestId: 'bad request', store: { listReports: async () => [], listAuditLogs: async () => [], applyDeletion: async () => undefined } })).rejects.toThrow();
   });
 });

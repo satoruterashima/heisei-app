@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from 'vitest';
 import { createApiApp, type ReportQuotaBoundary } from '../apps/api/src/index.js';
 import type { AuthIdentity, JwtClaims } from '../packages/auth/src/index.js';
 import type { ReportRepositoryResult } from '../packages/database/src/index.js';
+import type { ReportStaffReader, StaffReportSummary } from '../packages/database/src/index.js';
 
 const actor = '00000000-0000-4000-8000-000000000001';
 const target = '00000000-0000-4000-8000-000000000003';
@@ -86,5 +87,32 @@ describe('POST /api/v1/reports local boundary', () => {
     const response = await app.request('/api/v1/reports', { method: 'POST', headers: { authorization: 'Bearer valid', 'content-type': 'application/json', 'idempotency-key': '00000000-0000-4000-8000-000000000012' }, body: JSON.stringify({ targetType: 'user', targetUserId: target, category: 'other', description: 'x\u0000' }) });
     expect(response.status).toBe(422);
     expect(repository.createReport).not.toHaveBeenCalled();
+  });
+});
+
+describe('GET /api/v1/staff/reports local metadata boundary', () => {
+  it('requires server-loaded admin identity and returns metadata without encrypted content', async () => {
+    const staff: AuthIdentity = { userId: actor, authLevel: 3, membership: 'official', roles: ['admin'], status: 'active' };
+    const reader: ReportStaffReader = { listAssigned: vi.fn(async (): Promise<readonly StaffReportSummary[]> => [{ reportId: '00000000-0000-4000-8000-000000000099', targetType: 'user', targetUserId: target, category: 'other', status: 'pending', createdAt: '2026-10-24T00:00:00.000Z', reviewClosedAt: null }]) };
+    const app = createApiApp({
+      verifier: { verify: async () => claims },
+      identityLoader: { load: async () => staff },
+      reportStaffReader: reader,
+    });
+    const response = await app.request('/api/v1/staff/reports', { headers: { authorization: 'Bearer valid' } });
+    expect(response.status).toBe(200);
+    expect(response.headers.get('cache-control')).toBe('no-store');
+    expect((await response.json()).data.reports[0]).not.toHaveProperty('ciphertext');
+    expect(reader.listAssigned).toHaveBeenCalledWith(actor, expect.any(String));
+  });
+
+  it('rejects member identities and keeps reader failures opaque', async () => {
+    const reader: ReportStaffReader = { listAssigned: vi.fn(async () => { throw new Error('private database detail'); }) };
+    const app = createApiApp({ verifier: { verify: async () => claims }, identityLoader: { load: async () => identity }, reportStaffReader: reader });
+    expect((await app.request('/api/v1/staff/reports', { headers: { authorization: 'Bearer valid' } })).status).toBe(403);
+    const admin = createApiApp({ verifier: { verify: async () => claims }, identityLoader: { load: async () => ({ ...identity, authLevel: 3, roles: ['admin'] as const }) }, reportStaffReader: reader });
+    const failed = await admin.request('/api/v1/staff/reports', { headers: { authorization: 'Bearer valid' } });
+    expect(failed.status).toBe(500);
+    expect(JSON.stringify(await failed.json())).not.toContain('private database detail');
   });
 });

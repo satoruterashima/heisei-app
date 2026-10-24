@@ -39,6 +39,8 @@ psql "$LOCAL_DATABASE_URL" -v ON_ERROR_STOP=1 -f packages/database/drizzle/0003_
 psql "$LOCAL_DATABASE_URL" -v ON_ERROR_STOP=1 -f packages/database/drizzle/roles.sql
 psql "$LOCAL_DATABASE_URL" -v ON_ERROR_STOP=1 -f packages/database/drizzle/0004_report_repository_g4b2.sql
 psql "$LOCAL_DATABASE_URL" -v ON_ERROR_STOP=1 -f packages/database/drizzle/roles.sql
+psql "$LOCAL_DATABASE_URL" -v ON_ERROR_STOP=1 -f packages/database/drizzle/0005_report_operations_local.sql
+psql "$LOCAL_DATABASE_URL" -v ON_ERROR_STOP=1 -f packages/database/drizzle/roles.sql
 ```
 
 Run the reproducible, disposable PostgreSQL security checks with Docker:
@@ -57,3 +59,9 @@ discarding the disposable database. On a database containing data, use an
 approved expand/contract migration and backup procedure; do not execute a
 destructive down migration. Production, staging, Supabase, and shared databases
 are explicitly out of scope.
+
+`0005_report_operations_local.sql` adds a metadata-only target-scope staff
+reader for local operations tests. It cannot read encrypted columns, decrypt,
+change report status, dispose, disclose, or alter assignments. The assignment
+resolver must be server-side; a client target or arbitrary `app.staff_scope`
+value is not an authorization proof.

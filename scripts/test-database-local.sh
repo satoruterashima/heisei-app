@@ -73,15 +73,17 @@ CREATE ROLE heisei_staff_login LOGIN PASSWORD 'local-only-staff' NOSUPERUSER NOB
 CREATE ROLE heisei_identity_login LOGIN PASSWORD 'local-only-identity' NOSUPERUSER NOBYPASSRLS;
 CREATE ROLE heisei_audit_login LOGIN PASSWORD 'local-only-audit' NOSUPERUSER NOBYPASSRLS;
 CREATE ROLE heisei_report_login LOGIN PASSWORD 'local-only-report' NOSUPERUSER NOBYPASSRLS;
+CREATE ROLE heisei_report_staff_login LOGIN PASSWORD 'local-only-report-staff' NOSUPERUSER NOBYPASSRLS;
 CREATE ROLE heisei_visibility_login LOGIN PASSWORD 'local-only-visibility' NOSUPERUSER NOBYPASSRLS;
 GRANT heisei_app TO heisei_app_login;
 GRANT heisei_staff TO heisei_staff_login;
 GRANT heisei_identity_writer TO heisei_identity_login;
 GRANT heisei_audit_writer TO heisei_audit_login;
 GRANT heisei_report_writer TO heisei_report_login;
+GRANT heisei_report_staff_reader TO heisei_report_staff_login;
 GRANT heisei_visibility_reader TO heisei_visibility_login;
 GRANT USAGE ON SCHEMA public TO heisei_app_login, heisei_staff_login,
-  heisei_identity_login, heisei_audit_login, heisei_report_login, heisei_visibility_login;
+  heisei_identity_login, heisei_audit_login, heisei_report_login, heisei_report_staff_login, heisei_visibility_login;
 INSERT INTO profiles (id, username, display_name, auth_subject, auth_level)
 VALUES
   ('00000000-0000-4000-8000-000000000001', 'r2-user-1', 'R2 User 1', 'r2-subject-1', 1),
@@ -883,12 +885,53 @@ test "$tx_role_memberships" = 0
 echo "PASS: atomic closure privileges, role attributes and membership are restricted"
 psql_file < "$repo_root/packages/database/drizzle/0004_report_repository_g4b2.sql" >/dev/null
 psql_file < "$repo_root/packages/database/drizzle/roles.sql" >/dev/null
+psql_file < "$repo_root/packages/database/drizzle/0005_report_operations_local.sql" >/dev/null
+psql_file < "$repo_root/packages/database/drizzle/roles.sql" >/dev/null
 psql_file < "$repo_root/packages/database/drizzle/0004_report_repository_g4b2.sql" >/dev/null
+psql_file < "$repo_root/packages/database/drizzle/roles.sql" >/dev/null
+psql_file < "$repo_root/packages/database/drizzle/0005_report_operations_local.sql" >/dev/null
 psql_file < "$repo_root/packages/database/drizzle/roles.sql" >/dev/null
 legacy_atomic_execute="$(psql_file -Atqc "SELECT has_function_privilege('heisei_report_writer', 'public.report_create_atomic(uuid,character varying,character varying,character varying)', 'EXECUTE')")"
 repository_atomic_execute="$(psql_file -Atqc "SELECT has_function_privilege('heisei_report_writer', 'public.report_create_atomic_v2(uuid,character varying,character varying,character varying,uuid,jsonb,text,text,text,text,text,text,text)', 'EXECUTE')")"
 test "$legacy_atomic_execute" = f
 test "$repository_atomic_execute" = t
 echo "PASS: G4-B2 migration disables legacy save path and keeps repository function only"
+staff_report_rows="$(run_as heisei_report_staff_login -At <<'SQL'
+SET ROLE heisei_report_staff_reader;
+SET app.user_id = '00000000-0000-4000-8000-000000000001';
+SET app.staff_scope = '00000000-0000-4000-8000-000000000002';
+SELECT count(*) FROM reports WHERE target_user_id = current_setting('app.staff_scope')::uuid;
+SQL
+)"
+[[ "$staff_report_rows" =~ ^[0-9]+$ ]]
+echo "PASS: staff reader sees only assigned target metadata"
+expect_failure "staff reader encrypted column access" run_as heisei_report_staff_login <<'SQL'
+SET ROLE heisei_report_staff_reader;
+SET app.user_id = '00000000-0000-4000-8000-000000000001';
+SET app.staff_scope = '00000000-0000-4000-8000-000000000002';
+SELECT description_ciphertext FROM reports;
+SQL
+expect_failure "staff reader audit forgery" run_as heisei_report_staff_login <<'SQL'
+SET ROLE heisei_report_staff_reader;
+SET app.user_id = '00000000-0000-4000-8000-000000000001';
+SET app.staff_scope = '00000000-0000-4000-8000-000000000002';
+INSERT INTO audit_logs (actor_user_id, target_user_id, action, reason, request_id, rule_version)
+VALUES (current_setting('app.user_id')::uuid, current_setting('app.staff_scope')::uuid, 'report.delete', 'metadata-only', 'ops-forged', '003i-ops-v1');
+SQL
+run_as heisei_report_staff_login <<'SQL' >/dev/null
+SET ROLE heisei_report_staff_reader;
+SET app.user_id = '00000000-0000-4000-8000-000000000001';
+SET app.staff_scope = '00000000-0000-4000-8000-000000000002';
+INSERT INTO audit_logs (actor_user_id, target_user_id, action, reason, request_id, rule_version)
+VALUES (current_setting('app.user_id')::uuid, current_setting('app.staff_scope')::uuid, 'report.staff.view', 'metadata-only', 'ops-view', '003i-ops-v1');
+SQL
+ops_audit_count="$(psql_file -Atqc "SELECT count(*) FROM audit_logs WHERE action = 'report.staff.view' AND request_id = 'ops-view'")"
+test "$ops_audit_count" = 1
+echo "PASS: staff metadata access is audited and non-disclosing"
+staff_role_attributes="$(psql_file -Atqc "SELECT rolsuper::int || ':' || rolbypassrls::int || ':' || rolcanlogin::int FROM pg_roles WHERE rolname = 'heisei_report_staff_reader'")"
+staff_role_memberships="$(psql_file -Atqc "SELECT count(*) FROM pg_auth_members m JOIN pg_roles r ON r.oid = m.member WHERE r.rolname = 'heisei_report_staff_reader'")"
+test "$staff_role_attributes" = '0:0:0'
+test "$staff_role_memberships" = 0
+echo "PASS: staff reader role remains least privilege"
 echo "PASS: migration first application and reapplication"
 echo "PASS: PostgreSQL RLS integration checks"

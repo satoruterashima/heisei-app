@@ -37,6 +37,9 @@ BEGIN
   IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'heisei_report_ttl_writer') THEN
     CREATE ROLE heisei_report_ttl_writer NOLOGIN NOSUPERUSER NOBYPASSRLS;
   END IF;
+  IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'heisei_report_staff_reader') THEN
+    CREATE ROLE heisei_report_staff_reader NOLOGIN NOSUPERUSER NOBYPASSRLS;
+  END IF;
 END $$;
 
 -- G4-B2 supersedes the isolated pre-repository function when present. The
@@ -62,6 +65,7 @@ ALTER ROLE heisei_report_writer NOSUPERUSER NOBYPASSRLS NOLOGIN;
 ALTER ROLE heisei_report_tx_writer NOSUPERUSER NOBYPASSRLS NOLOGIN;
 ALTER ROLE heisei_report_reconciler NOSUPERUSER NOBYPASSRLS NOLOGIN;
 ALTER ROLE heisei_report_ttl_writer NOSUPERUSER NOBYPASSRLS NOLOGIN;
+ALTER ROLE heisei_report_staff_reader NOSUPERUSER NOBYPASSRLS NOLOGIN;
 
 REVOKE ALL ON profiles, user_verifications, user_settings, blocks, audit_logs FROM heisei_app;
 GRANT SELECT ON profiles, user_verifications, user_settings, blocks TO heisei_app;

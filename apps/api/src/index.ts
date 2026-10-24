@@ -2,7 +2,7 @@ import { Hono } from 'hono';
 import { cors } from 'hono/cors';
 import { AccessPolicyService, authMiddleware, authorize, isAccessOperation, optionalAuthMiddleware, type AccessPolicyInput, type AuthMiddlewareOptions, type AuthVariables, getAuth, getOptionalAuth } from '@heisei/auth';
 import type { JwtVerifier } from '@heisei/auth';
-import { DatabaseIdentityLoader, PostgresBlockMutationStore, PostgresBlockRelationStore, PostgresIdentityRecordStore, PostgresProfileStore, ReportRepository, prepareReportPayload, type BlockMutationStore, type ProfileRecord, type ProfileStore, type TrustedPostgresExecutor } from '@heisei/database';
+import { DatabaseIdentityLoader, PostgresBlockMutationStore, PostgresBlockRelationStore, PostgresIdentityRecordStore, PostgresProfileStore, ReportRepository, prepareReportPayload, type BlockMutationStore, type ProfileRecord, type ProfileStore, type ReportStaffReader, type TrustedPostgresExecutor } from '@heisei/database';
 import { createQuotaReservationId, QuotaCoordinator, verifiedQuotaActorFromIdentity, type CoordinatorResult, type ReportOutcome, type VerifiedQuotaActor } from '@heisei/domain';
 import { parseAndValidateReportPayload, REPORT_MAX_BODY_BYTES, validateIdempotencyKey, type ValidatedReportPayload } from '@heisei/validation';
 import { updateProfileSchema } from '@heisei/validation';
@@ -12,6 +12,7 @@ export type DatabaseApiOptions = {
   executor: TrustedPostgresExecutor;
   reportRepository?: ReportRepository;
   reportQuota?: ReportQuotaBoundary;
+  reportStaffReader?: ReportStaffReader;
 };
 
 export type ReportRepositoryPort = Pick<ReportRepository, 'createReport'>;
@@ -35,6 +36,8 @@ export type ApiOptions = {
   blockStore?: BlockMutationStore;
   reportRepository?: ReportRepositoryPort;
   reportQuota?: ReportQuotaBoundary;
+  /** Optional local-only metadata reader; it never decrypts or mutates reports. */
+  reportStaffReader?: ReportStaffReader;
 };
 
 export function createApiApp(authOrOptions?: AuthMiddlewareOptions | ApiOptions) {
@@ -52,7 +55,7 @@ export function createApiApp(authOrOptions?: AuthMiddlewareOptions | ApiOptions)
 
   const candidate = authOrOptions as (AuthMiddlewareOptions & ApiOptions) | undefined;
   const legacyAuth = candidate && 'verifier' in candidate
-    && !('auth' in candidate || 'accessPolicy' in candidate || 'loadBlockRelation' in candidate || 'approveRelationship' in candidate || 'approvePrerequisites' in candidate || 'approveScope' in candidate || 'profileStore' in candidate || 'blockStore' in candidate || 'reportRepository' in candidate || 'reportQuota' in candidate);
+    && !('auth' in candidate || 'accessPolicy' in candidate || 'loadBlockRelation' in candidate || 'approveRelationship' in candidate || 'approvePrerequisites' in candidate || 'approveScope' in candidate || 'profileStore' in candidate || 'blockStore' in candidate || 'reportRepository' in candidate || 'reportQuota' in candidate || 'reportStaffReader' in candidate);
   const options: ApiOptions = legacyAuth
     ? { auth: candidate }
     : (candidate && 'verifier' in candidate
@@ -256,6 +259,22 @@ export function createApiApp(authOrOptions?: AuthMiddlewareOptions | ApiOptions)
     return c.json({ error: { code: 'service_unavailable', message: 'Report service is unavailable' }, requestId }, 503, headers);
   });
 
+  app.use('/api/v1/staff/reports', authMiddleware(middlewareOptions));
+  app.get('/api/v1/staff/reports', async (c) => {
+    const { identity, claims } = getAuth(c);
+    const requestId = crypto.randomUUID();
+    const headers = { 'Cache-Control': 'no-store', 'X-Request-ID': requestId };
+    const decision = authorize({ context: { identity, claims }, request: { minimumAuthLevel: 3, roles: ['admin'] } });
+    if (!decision.allowed) return c.json({ error: { code: 'forbidden', message: 'Staff report access is not allowed' }, requestId }, 403, headers);
+    if (!options.reportStaffReader) return c.json({ error: { code: 'service_unavailable', message: 'Staff report access is not configured' }, requestId }, 503, headers);
+    try {
+      const reports = await options.reportStaffReader.listAssigned(identity.userId, requestId);
+      return c.json({ data: { reports }, requestId }, 200, headers);
+    } catch {
+      return c.json({ error: { code: 'internal_error', message: 'Staff report lookup failed' }, requestId }, 500, headers);
+    }
+  });
+
   const policy = options.accessPolicy ?? new AccessPolicyService();
   app.use('/api/v1/access', optionalAuthMiddleware(middlewareOptions));
   app.get('/api/v1/access', async (c) => {
@@ -304,6 +323,7 @@ export function createApiAppWithDatabase(options: DatabaseApiOptions) {
     blockStore: new PostgresBlockMutationStore(options.executor),
     reportRepository: options.reportRepository,
     reportQuota: options.reportQuota,
+    reportStaffReader: options.reportStaffReader,
   });
 }
 

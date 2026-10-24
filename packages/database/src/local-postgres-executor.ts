@@ -19,9 +19,10 @@ const DEFAULT_ROLES = {
   blockWriter: 'heisei_block_writer',
   reportWriter: 'heisei_report_writer',
   reportReconciler: 'heisei_report_reconciler',
+  reportStaff: 'heisei_report_staff_reader',
   visibilityReader: 'heisei_visibility_reader',
 } as const;
-type FixedRoles = { app: string; identityWriter: string; profileWriter: string; blockWriter: string; reportWriter: string; reportReconciler: string; visibilityReader: string };
+type FixedRoles = { app: string; identityWriter: string; profileWriter: string; blockWriter: string; reportWriter: string; reportReconciler: string; reportStaff: string; visibilityReader: string };
 
 const SAFE_ROLE = /^[a-z_][a-z0-9_]*$/u;
 
@@ -31,7 +32,7 @@ function quoteRole(role: string): string {
 }
 
 function assertSettingName(name: string): void {
-  if (!/^app\.(?:user_id|auth_subject|visibility_target_id)$/u.test(name)) throw new Error('invalid RLS setting');
+  if (!/^app\.(?:user_id|auth_subject|visibility_target_id|staff_scope)$/u.test(name)) throw new Error('invalid RLS setting');
 }
 
 function queryAdapter(client: PoolClient): PostgresQueryExecutor {
@@ -59,6 +60,7 @@ export class LocalTrustedPostgresExecutor implements TrustedPostgresExecutor {
     quoteRole(this.roles.blockWriter);
     quoteRole(this.roles.reportWriter);
     quoteRole(this.roles.reportReconciler);
+    quoteRole(this.roles.reportStaff);
     quoteRole(this.roles.visibilityReader);
     if (options.pool) {
       this.pool = options.pool;
@@ -118,6 +120,11 @@ export class LocalTrustedPostgresExecutor implements TrustedPostgresExecutor {
   async withReportReconciler<T>(userId: string, operation: (query: PostgresQueryExecutor) => Promise<T>): Promise<T> {
     if (!this.isUuid(userId)) throw new Error('invalid reconciliation actor');
     return this.withTransaction(this.roles.reportReconciler, [['app.user_id', userId]], operation);
+  }
+
+  async withReportStaff<T>(staffUserId: string, targetUserId: string, operation: (query: PostgresQueryExecutor) => Promise<T>): Promise<T> {
+    if (!this.isUuid(staffUserId) || !this.isUuid(targetUserId)) throw new Error('invalid staff context');
+    return this.withTransaction(this.roles.reportStaff, [['app.user_id', staffUserId], ['app.staff_scope', targetUserId]], operation);
   }
 
   async close(): Promise<void> {

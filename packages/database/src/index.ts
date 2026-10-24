@@ -4,3 +4,4 @@ export * from './postgres-stores';
 export * from './report-repository';
 export * from './report-reconciliation';
 export * from './production-config';
+export * from './report-operations';
