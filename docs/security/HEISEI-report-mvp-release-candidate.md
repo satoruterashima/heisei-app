@@ -132,6 +132,19 @@ git diff --exit-code -- pnpm-lock.yaml
 本RCで確認できるのは隔離DB、fixture鍵、ローカルDO、実JWT/Honoの統合までである。
 実Secret、remote Cloudflare、staging DB、料金、eviction、実運用障害は未検証である。
 
+## Staging dry-run結果
+
+Wrangler 3.114.17で次を確認した。
+
+- 通常Workerのdry-runはbindingなしで成功
+- local DO Workerのdry-runは `QUOTA_ACTOR: QuotaActor` とmigration v1を認識
+- staging/production templateのdry-runは環境別Worker名、DO binding、migration v1、
+  `HEISEI_QUOTA_CONFIG_SOURCE` を認識
+- staging/production templateは専用 `staging-worker.ts` entrypointから `QuotaActor` を
+  exportし、通常のHono unit testへCloudflare専用moduleを持ち込まない
+
+実リソースの作成、remote binding、Secret投入、DB接続、deployは未実施である。
+
 ## CEO承認が必要な残作業
 
 - staging/production DBとmigration適用
