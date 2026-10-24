@@ -96,6 +96,39 @@ function cloneState(state: QuotaState): QuotaState {
   return { ...state, reservations: Object.fromEntries(Object.entries(state.reservations).map(([key, value]) => [key, { ...value }])) };
 }
 
+const RESERVATION_STATUSES: readonly ReservationStatus[] = ['reserved', 'in_flight', 'committed', 'cancelled', 'expired', 'uncertain'];
+
+/** Strict persisted-state validation used by both fixture and durable adapters. */
+export function validateQuotaState(value: unknown, actorId: string, now?: number, maxStoredReservations?: number): value is QuotaState {
+  if (!value || typeof value !== 'object') return false;
+  const state = value as Record<string, unknown>;
+  const expectedKeys = ['version', 'actorId', 'shortWindowStartedAt', 'shortRequestCount', 'longWindowStartedAt', 'longRequestCount', 'admissionWindowStartedAt', 'confirmedAdmissionCount', 'reservedAdmissionCount', 'uncertainAdmissionCount', 'reservations', 'updatedAt'];
+  if (Object.keys(state).some((key) => !expectedKeys.includes(key)) || expectedKeys.some((key) => !(key in state))) return false;
+  if (state.version !== 2 || state.actorId !== actorId || !UUID_V4.test(actorId)) return false;
+  const nonNegativeIntegers = ['shortWindowStartedAt', 'shortRequestCount', 'longWindowStartedAt', 'longRequestCount', 'admissionWindowStartedAt', 'confirmedAdmissionCount', 'reservedAdmissionCount', 'uncertainAdmissionCount', 'updatedAt'];
+  if (nonNegativeIntegers.some((key) => !Number.isSafeInteger(state[key]) || (state[key] as number) < 0)) return false;
+  if (now !== undefined && (!Number.isSafeInteger(now) || (state.updatedAt as number) > now || (state.shortWindowStartedAt as number) > now || (state.longWindowStartedAt as number) > now || (state.admissionWindowStartedAt as number) > now)) return false;
+  if (!state.reservations || typeof state.reservations !== 'object' || Array.isArray(state.reservations)) return false;
+  const reservations = state.reservations as Record<string, unknown>;
+  if (maxStoredReservations !== undefined && Object.keys(reservations).length > maxStoredReservations) return false;
+  let reserved = 0;
+  let uncertain = 0;
+  for (const [key, raw] of Object.entries(reservations)) {
+    if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return false;
+    const reservation = raw as Record<string, unknown>;
+    const reservationKeys = ['reservationId', 'actorId', 'status', 'createdAt', 'expiresAt'];
+    if (Object.keys(reservation).some((field) => !reservationKeys.includes(field)) || reservationKeys.some((field) => !(field in reservation))) return false;
+    if (reservation.reservationId !== key || typeof reservation.reservationId !== 'string' || !UUID_V4.test(reservation.reservationId)) return false;
+    if (reservation.actorId !== actorId || typeof reservation.actorId !== 'string') return false;
+    if (typeof reservation.status !== 'string' || !RESERVATION_STATUSES.includes(reservation.status as ReservationStatus)) return false;
+    if (!Number.isSafeInteger(reservation.createdAt) || !Number.isSafeInteger(reservation.expiresAt) || (reservation.createdAt as number) < 0 || (reservation.expiresAt as number) < (reservation.createdAt as number)) return false;
+    if (now !== undefined && (reservation.createdAt as number) > now) return false;
+    if (reservation.status === 'reserved' || reservation.status === 'in_flight') reserved += 1;
+    if (reservation.status === 'uncertain') uncertain += 1;
+  }
+  return state.reservedAdmissionCount === reserved && state.uncertainAdmissionCount === uncertain;
+}
+
 /** Pure quota and reservation state transitions. It has no network or storage dependency. */
 export class QuotaEngine {
   constructor(private readonly config: QuotaConfig) {
@@ -315,7 +348,7 @@ export class QuotaCoordinator {
         const now = this.clock.now();
         assertTime(now);
         const current = await this.store.load(actorId) ?? this.engine.initialState(actorId, now);
-        if (current.actorId !== actorId || current.version !== 2 || !isValidState(current)) return { result: 'unavailable' };
+        if (!validateQuotaState(current, actorId, now)) return { result: 'unavailable' };
         const step = transition(current, now);
         await this.store.save(step.state);
         return { result: step.result };
@@ -324,14 +357,6 @@ export class QuotaCoordinator {
       return { result: 'unavailable' };
     }
   }
-}
-
-function isValidState(state: QuotaState): boolean {
-  return Number.isSafeInteger(state.confirmedAdmissionCount) && state.confirmedAdmissionCount >= 0
-    && Number.isSafeInteger(state.reservedAdmissionCount) && state.reservedAdmissionCount >= 0
-    && Number.isSafeInteger(state.uncertainAdmissionCount) && state.uncertainAdmissionCount >= 0
-    && state.reservations !== null && typeof state.reservations === 'object'
-    && Object.values(state.reservations).every((reservation) => reservation.actorId === state.actorId);
 }
 
 /** Local fixture store; production DO storage must provide the same atomic actor turn. */
