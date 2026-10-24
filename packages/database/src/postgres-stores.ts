@@ -1,4 +1,5 @@
 import type { BlockRelation, BlockRelationStore, IdentityRecord, IdentityRecordStore, VerificationStatus } from './identity-loader.js';
+import type { AuthIdentity, VisibilityAccountStatus, VisibilityEvidence } from '@heisei/auth';
 
 /** A deliberately small adapter for whichever PostgreSQL driver the server approves. */
 export interface PostgresQueryExecutor {
@@ -19,6 +20,13 @@ export interface TrustedPostgresExecutor {
   /** Optional until every approved executor supports the atomic profile writer role. */
   withProfileWriter?<T>(userId: string, operation: (query: PostgresQueryExecutor) => Promise<T>): Promise<T>;
   withBlockWriter?<T>(userId: string, operation: (query: PostgresQueryExecutor) => Promise<T>): Promise<T>;
+  /** Internal report boundary; caller cannot choose the database role or GUC values. */
+  withReportWriter?<T>(userId: string, targetUserId: string, operation: (query: PostgresQueryExecutor) => Promise<T>, authSubject?: string): Promise<T>;
+  /** Read-only actor-bound reconciliation boundary; it cannot write reports or audit rows. */
+  withReportReconciler?<T>(userId: string, operation: (query: PostgresQueryExecutor) => Promise<T>): Promise<T>;
+  /** Case-scoped reader boundary. The database derives visible reports from assignments. */
+  withReportStaff?<T>(staffUserId: string, operation: (query: PostgresQueryExecutor) => Promise<T>): Promise<T>;
+  withVisibilityReader?<T>(actorUserId: string, targetUserId: string, operation: (query: PostgresQueryExecutor) => Promise<T>): Promise<T>;
 }
 
 export interface BlockMutationStore {
@@ -91,6 +99,12 @@ const blockSql = `
     ) AS blocked_by_target
 `;
 
+const visibilityTargetSql = `
+  SELECT id::text AS target_user_id, account_status, profile_visibility
+  FROM profiles
+  WHERE id = $1::uuid
+`;
+
 const profileSelectSql = `
   SELECT id::text AS user_id, username, display_name, bio, favorite_genres, avatar_url,
          updated_at::text AS updated_at
@@ -132,6 +146,21 @@ const blockDeleteByTargetSql = `
   RETURNING blocked_id::text AS target_user_id
 `;
 
+const pairLockKeysSql = `
+  SELECT LEAST($1::uuid::text, $2::uuid::text) AS first_lock,
+         GREATEST($1::uuid::text, $2::uuid::text) AS second_lock
+`;
+
+const lockKeySql = `
+  SELECT pg_advisory_xact_lock(hashtextextended($1::text, 0))
+`;
+
+const blockTargetLookupSql = `
+  SELECT blocked_id::text AS target_user_id
+  FROM blocks
+  WHERE id = $1::uuid
+`;
+
 const blockAuditSql = `
   INSERT INTO audit_logs (actor_user_id, target_user_id, action, reason, request_id, rule_version)
   VALUES ($1::uuid, $2::uuid, $3, NULL, $4, '003h')
@@ -139,6 +168,14 @@ const blockAuditSql = `
 
 function isUuid(value: string): boolean {
   return /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(value);
+}
+
+async function acquirePairLocks(query: PostgresQueryExecutor, actorUserId: string, targetUserId: string): Promise<void> {
+  const keys = await query.query<{ first_lock: string; second_lock: string }>(pairLockKeysSql, [actorUserId, targetUserId]);
+  const row = keys.rows[0];
+  if (!row) throw new Error('invalid block lock pair');
+  await query.query(lockKeySql, [row.first_lock]);
+  if (row.second_lock !== row.first_lock) await query.query(lockKeySql, [row.second_lock]);
 }
 
 /** Only a missing target reference is masked; unrelated FK/audit errors remain failures. */
@@ -159,6 +196,7 @@ export class PostgresBlockMutationStore implements BlockMutationStore {
     if (!this.executor.withBlockWriter) throw new Error('block writer is unavailable');
     try {
       return await this.executor.withBlockWriter(actorUserId, async (query) => {
+        await acquirePairLocks(query, actorUserId, targetUserId);
         const inserted = await query.query<{ block_id: string; target_user_id: string }>(blockInsertSql, [actorUserId, targetUserId]);
         const row = inserted.rows[0];
         if (!row) return;
@@ -177,6 +215,10 @@ export class PostgresBlockMutationStore implements BlockMutationStore {
     if (!isUuid(actorUserId) || !isUuid(blockId) || !requestId || requestId.length > 128) throw new Error('invalid block mutation');
     if (!this.executor.withBlockWriter) throw new Error('block writer is unavailable');
     return this.executor.withBlockWriter(actorUserId, async (query) => {
+      const target = await query.query<{ target_user_id: string }>(blockTargetLookupSql, [blockId]);
+      const targetUserId = target.rows[0]?.target_user_id;
+      if (!targetUserId) return;
+      await acquirePairLocks(query, actorUserId, targetUserId);
       const deleted = await query.query<{ target_user_id: string }>(blockDeleteSql, [blockId]);
       const row = deleted.rows[0];
       if (!row || typeof row.target_user_id !== 'string') return;
@@ -188,6 +230,7 @@ export class PostgresBlockMutationStore implements BlockMutationStore {
     if (!isUuid(actorUserId) || !isUuid(targetUserId) || !requestId || requestId.length > 128) throw new Error('invalid block mutation');
     if (!this.executor.withBlockWriter) throw new Error('block writer is unavailable');
     return this.executor.withBlockWriter(actorUserId, async (query) => {
+      await acquirePairLocks(query, actorUserId, targetUserId);
       const deleted = await query.query<{ target_user_id: string }>(blockDeleteByTargetSql, [actorUserId, targetUserId]);
       if (deleted.rows.length > 1) throw new Error('unexpected block row count');
       const row = deleted.rows[0];
@@ -323,5 +366,117 @@ export class PostgresBlockRelationStore implements BlockRelationStore {
         blockedByTarget: row.blocked_by_target,
       };
     });
+  }
+}
+
+type VisibilityTargetRow = {
+  target_user_id: string;
+  account_status: string;
+  profile_visibility: string | null;
+};
+
+export interface UserVisibilityRepository {
+  findEvidence(
+    actor: Pick<AuthIdentity, 'userId' | 'status'>,
+    targetUserId: string,
+  ): Promise<VisibilityEvidence>;
+}
+
+type VisibilityExecutor = Pick<TrustedPostgresExecutor, 'withVisibilityReader'>;
+
+function visibilityUnavailable(actorUserId: string, targetUserId: string): VisibilityEvidence {
+  return {
+    actorUserId,
+    targetUserId,
+    actorStatus: 'unavailable',
+    targetStatus: 'unavailable',
+    targetState: 'unavailable',
+    profileVisibility: 'unavailable',
+    blockRelation: 'unavailable',
+    relationship: 'unavailable',
+  };
+}
+
+function isVisibilityUuid(value: string): boolean {
+  return /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/iu.test(value);
+}
+
+function mapVisibilityStatus(value: string): VisibilityAccountStatus {
+  if (value === 'active' || value === 'ai_suspended' || value === 'suspended' || value === 'banned') return value;
+  return 'unknown';
+}
+
+/**
+ * Reads only the public target projection and both block directions inside a
+ * dedicated visibility-reader transaction. It never returns a client-facing
+ * profile and converts dependency failures to unavailable evidence.
+ */
+export class PostgresUserVisibilityRepository implements UserVisibilityRepository {
+  constructor(private readonly executor: VisibilityExecutor) {}
+
+  async findEvidence(
+    actor: Pick<AuthIdentity, 'userId' | 'status'>,
+    targetUserId: string,
+  ): Promise<VisibilityEvidence> {
+    if (!isVisibilityUuid(actor.userId) || !isVisibilityUuid(targetUserId)) {
+      return {
+        ...visibilityUnavailable(actor.userId, targetUserId),
+        actorStatus: actor.status,
+        targetState: 'absent',
+        profileVisibility: 'undefined',
+        blockRelation: { blockedByActor: false, blockedByTarget: false },
+        relationship: 'not_required',
+      };
+    }
+    if (!this.executor.withVisibilityReader) return visibilityUnavailable(actor.userId, targetUserId);
+
+    try {
+      return await this.executor.withVisibilityReader(actor.userId, targetUserId, async (query) => {
+        const profileResult = await query.query<VisibilityTargetRow>(visibilityTargetSql, [targetUserId]);
+        const row = profileResult.rows[0];
+        if (!row) {
+          return {
+            ...visibilityUnavailable(actor.userId, targetUserId),
+            actorStatus: actor.status,
+            targetState: 'absent',
+            profileVisibility: 'undefined',
+            blockRelation: { blockedByActor: false, blockedByTarget: false },
+            relationship: 'not_required',
+          };
+        }
+        if (
+          row.target_user_id.toLowerCase() !== targetUserId.toLowerCase() ||
+          typeof row.account_status !== 'string' ||
+          (row.profile_visibility !== null && typeof row.profile_visibility !== 'string')
+        ) return visibilityUnavailable(actor.userId, targetUserId);
+
+        const blockResult = await query.query<BlockRow>(blockSql, [actor.userId, targetUserId]);
+        const block = blockResult.rows[0];
+        if (
+          !block || typeof block.blocked_by_actor !== 'boolean' ||
+          typeof block.blocked_by_target !== 'boolean'
+        ) return visibilityUnavailable(actor.userId, targetUserId);
+
+        return {
+          actorUserId: actor.userId,
+          targetUserId,
+          actorStatus: actor.status,
+          targetStatus: mapVisibilityStatus(row.account_status),
+          targetState: 'present',
+          profileVisibility: row.profile_visibility === 'public'
+            ? 'public'
+            : row.profile_visibility === 'private'
+              ? 'private'
+              : 'undefined',
+          blockRelation: {
+            blockedByActor: block.blocked_by_actor,
+            blockedByTarget: block.blocked_by_target,
+          },
+          relationship: 'not_required',
+        };
+      });
+    } catch {
+      return visibilityUnavailable(actor.userId, targetUserId);
+    }
   }
 }

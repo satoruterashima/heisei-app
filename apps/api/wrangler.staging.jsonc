@@ -1,0 +1,35 @@
+{
+  "$schema": "../../node_modules/wrangler/config-schema.json",
+  "name": "heisei-api-staging",
+  "main": "src/staging-worker.ts",
+  "compatibility_date": "2026-10-24",
+  "compatibility_flags": ["nodejs_compat"],
+  "durable_objects": {
+    "bindings": [{ "name": "QUOTA_ACTOR", "class_name": "QuotaActor" }]
+  },
+  "migrations": [{ "tag": "v1", "new_sqlite_classes": ["QuotaActor"] }],
+  "hyperdrive": [
+    { "binding": "HYPERDRIVE", "id": "c9e3f3014f9b4352a9dc5eac7a71334e" }
+  ],
+  "vars": {
+    "HEISEI_ENVIRONMENT": "staging",
+    "HEISEI_QUOTA_CONFIG_SOURCE": "approved-staging-config",
+    "HEISEI_QUOTA_SHORT_WINDOW_MS": "60000",
+    "HEISEI_QUOTA_SHORT_REQUEST_LIMIT": "10",
+    "HEISEI_QUOTA_LONG_WINDOW_MS": "86400000",
+    "HEISEI_QUOTA_LONG_REQUEST_LIMIT": "100",
+    "HEISEI_QUOTA_ADMISSION_WINDOW_MS": "86400000",
+    "HEISEI_QUOTA_NEW_ADMISSION_LIMIT": "20",
+    "HEISEI_QUOTA_MAX_ACTIVE_RESERVATIONS": "5",
+    "HEISEI_QUOTA_RESERVATION_TTL_MS": "60000",
+    "HEISEI_QUOTA_STATE_RETENTION_MS": "2592000000",
+    "HEISEI_DATABASE_POOL_MAX": "5",
+    "HEISEI_DATABASE_CONNECT_TIMEOUT_MS": "5000",
+    "HEISEI_DATABASE_STATEMENT_TIMEOUT_MS": "10000",
+    "HEISEI_DATABASE_QUERY_TIMEOUT_MS": "15000"
+      ,"HEISEI_JWT_ISSUER": "https://heisei-api-staging.satoworks.workers.dev"
+      ,"HEISEI_JWT_AUDIENCE": "heisei-staging"
+      ,"HEISEI_JWT_JWKS_URI": "https://heisei-api-staging.satoworks.workers.dev/__staging/jwks"
+      ,"HEISEI_JWT_JWKS_JSON": "{\"keys\":[{\"kty\":\"RSA\",\"n\":\"4p_IiLT9lJWOZuVDAtvVU4Ee5n1RN17IV6Y4l9XROCI8JqEB40EtmvTy2QiTWadocHRDmHXsCQ1jz6Iht9_ezmI6bN3HIV7s_Rue2nYRPiya0cbY1xz8MkxdRV-TyagTttNHOgnXIjuOMRX73Lcb_5l9eH68v7SiwEV_yABu1pvDYtKWTK6dZcBo_k7w-wPs-xPdu009UUVZVg5qPjyYMh1o05TgDZQkCURN4K7Hg32eKmpOTA51wrvgB8l8Qmh3csJD7JO-Ob9Asd5OoB3Jg4jr4Vq427BuymP5_L3zeTzi0kuQ_MO2_lrvpnQlDR8lAV3CctcNgntz2_9GZqZBTQ\",\"e\":\"AQAB\",\"kid\":\"heisei-staging-e2e-v1\",\"alg\":\"RS256\",\"use\":\"sig\"}]}"
+  }
+}

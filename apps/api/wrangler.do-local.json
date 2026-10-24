@@ -1,0 +1,25 @@
+{
+  "name": "heisei-do-local",
+  "main": "src/quota-do-worker.ts",
+  "compatibility_date": "2024-05-29",
+  "compatibility_flags": ["nodejs_compat"],
+  "vars": {
+    "HEISEI_QUOTA_SHORT_WINDOW_MS": "100",
+    "HEISEI_QUOTA_SHORT_REQUEST_LIMIT": "2",
+    "HEISEI_QUOTA_LONG_WINDOW_MS": "1000",
+    "HEISEI_QUOTA_LONG_REQUEST_LIMIT": "4",
+    "HEISEI_QUOTA_ADMISSION_WINDOW_MS": "1000",
+    "HEISEI_QUOTA_NEW_ADMISSION_LIMIT": "2",
+    "HEISEI_QUOTA_RESERVATION_TTL_MS": "50",
+    "HEISEI_QUOTA_MAX_ACTIVE_RESERVATIONS": "2",
+    "HEISEI_QUOTA_STATE_RETENTION_MS": "200"
+  },
+  "durable_objects": {
+    "bindings": [
+      { "name": "QUOTA_ACTOR", "class_name": "QuotaActor" }
+    ]
+  },
+  "migrations": [
+    { "tag": "v1", "new_sqlite_classes": ["QuotaActor"] }
+  ]
+}
