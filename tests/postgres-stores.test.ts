@@ -4,6 +4,7 @@ import {
   PostgresBlockRelationStore,
   PostgresBlockMutationStore,
   PostgresIdentityRecordStore,
+  PostgresUserVisibilityRepository,
   type PostgresQueryExecutor,
   type TrustedPostgresExecutor,
 } from '../packages/database/src/index.js';
@@ -99,6 +100,32 @@ describe('PostgreSQL identity and block stores', () => {
       const store = new PostgresBlockRelationStore(executorFor(row));
       await expect(store.findBetween(userId, target)).resolves.toBeNull();
     }
+  });
+
+  it('loads only the public target projection and both block directions', async () => {
+    const target = '00000000-0000-4000-8000-000000000002';
+    const repository = new PostgresUserVisibilityRepository({
+      withVisibilityReader: async (_actor, _target, operation) => operation({
+        query: async <Row extends Record<string, unknown>>(sql: string) => ({
+          rows: (sql.includes('FROM profiles')
+            ? [{ target_user_id: target, account_status: 'active', profile_visibility: 'public' }]
+            : [{ blocked_by_actor: false, blocked_by_target: false }]) as unknown as readonly Row[],
+        }),
+      }),
+    });
+    await expect(repository.findEvidence({ userId, status: 'active' }, target)).resolves.toMatchObject({
+      targetState: 'present', profileVisibility: 'public', targetStatus: 'active',
+      blockRelation: { blockedByActor: false, blockedByTarget: false },
+    });
+  });
+
+  it('maps visibility database failures to unavailable without leaking details', async () => {
+    const repository = new PostgresUserVisibilityRepository({
+      withVisibilityReader: async () => { throw new Error('private SQL and connection details'); },
+    });
+    const evidence = await repository.findEvidence({ userId, status: 'active' }, '00000000-0000-4000-8000-000000000002');
+    expect(evidence.targetState).toBe('unavailable');
+    expect(JSON.stringify(evidence)).not.toContain('private SQL');
   });
 
   it('binds actor, target and subject as SQL parameters', async () => {

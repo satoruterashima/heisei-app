@@ -1,0 +1,14 @@
+{
+  "name": "heisei-do-local",
+  "main": "src/quota-do-worker.ts",
+  "compatibility_date": "2024-05-29",
+  "compatibility_flags": ["nodejs_compat"],
+  "durable_objects": {
+    "bindings": [
+      { "name": "QUOTA_ACTOR", "class_name": "QuotaActor" }
+    ]
+  },
+  "migrations": [
+    { "tag": "v1", "new_sqlite_classes": ["QuotaActor"] }
+  ]
+}
