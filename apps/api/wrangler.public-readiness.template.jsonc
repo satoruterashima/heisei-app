@@ -1,0 +1,19 @@
+{
+  "$schema": "../../node_modules/wrangler/config-schema.json",
+  "name": "heisei-api-REPLACE_ENVIRONMENT",
+  "main": "src/index.ts",
+  "compatibility_date": "2026-10-24",
+  "compatibility_flags": ["nodejs_compat"],
+  "durable_objects": {
+    "bindings": [{ "name": "QUOTA_ACTOR", "class_name": "QuotaActor" }]
+  },
+  "migrations": [{ "tag": "v1", "new_sqlite_classes": ["QuotaActor"] }],
+  "vars": {
+    "HEISEI_ENVIRONMENT": "REPLACE_ENVIRONMENT",
+    "HEISEI_QUOTA_CONFIG_SOURCE": "secret-or-approved-config-required"
+  },
+  "env": {
+    "staging": { "name": "heisei-api-staging-REPLACE", "vars": { "HEISEI_ENVIRONMENT": "staging" } },
+    "production": { "name": "heisei-api-production-REPLACE", "vars": { "HEISEI_ENVIRONMENT": "production" } }
+  }
+}

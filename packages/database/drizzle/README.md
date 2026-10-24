@@ -16,6 +16,11 @@ normal application role cannot forge events. Authentication evidence and the
 privileged profile columns are written only through the separate
 `heisei_identity_writer` role.
 
+`0002_report_foundation_g4a.sql` is a separate G4-A local-only migration. It
+creates the reports and report-idempotency tables, the `heisei_report_writer`
+boundary, pending uniqueness, and report audit allowlisting. It does not create
+a report API or connect G2/G3/G5 runtime behavior.
+
 The migration separates owner, staff, and identity-writer policies by database
 role. `app.user_id` and `app.staff_scope` are transaction-local values supplied
 only after trusted server authorization; setting a GUC never grants access on
@@ -27,6 +32,14 @@ queries use `app.user_id`.
 ```sh
 psql "$LOCAL_DATABASE_URL" -v ON_ERROR_STOP=1 -f packages/database/drizzle/0000_baseline_profiles.sql
 psql "$LOCAL_DATABASE_URL" -v ON_ERROR_STOP=1 -f packages/database/drizzle/0000_auth_foundation.sql
+psql "$LOCAL_DATABASE_URL" -v ON_ERROR_STOP=1 -f packages/database/drizzle/roles.sql
+psql "$LOCAL_DATABASE_URL" -v ON_ERROR_STOP=1 -f packages/database/drizzle/0001_profile_visibility.sql
+psql "$LOCAL_DATABASE_URL" -v ON_ERROR_STOP=1 -f packages/database/drizzle/0002_report_foundation_g4a.sql
+psql "$LOCAL_DATABASE_URL" -v ON_ERROR_STOP=1 -f packages/database/drizzle/0003_report_atomic_boundary_g4b1.sql
+psql "$LOCAL_DATABASE_URL" -v ON_ERROR_STOP=1 -f packages/database/drizzle/roles.sql
+psql "$LOCAL_DATABASE_URL" -v ON_ERROR_STOP=1 -f packages/database/drizzle/0004_report_repository_g4b2.sql
+psql "$LOCAL_DATABASE_URL" -v ON_ERROR_STOP=1 -f packages/database/drizzle/roles.sql
+psql "$LOCAL_DATABASE_URL" -v ON_ERROR_STOP=1 -f packages/database/drizzle/0005_report_operations_local.sql
 psql "$LOCAL_DATABASE_URL" -v ON_ERROR_STOP=1 -f packages/database/drizzle/roles.sql
 ```
 
@@ -46,3 +59,9 @@ discarding the disposable database. On a database containing data, use an
 approved expand/contract migration and backup procedure; do not execute a
 destructive down migration. Production, staging, Supabase, and shared databases
 are explicitly out of scope.
+
+`0005_report_operations_local.sql` adds a metadata-only target-scope staff
+reader for local operations tests. It cannot read encrypted columns, decrypt,
+change report status, dispose, disclose, or alter assignments. The assignment
+resolver must be server-side; a client target or arbitrary `app.staff_scope`
+value is not an authorization proof.
