@@ -15,11 +15,6 @@ GRANT SELECT ON reports, report_idempotency TO heisei_report_tx_writer;
 GRANT INSERT ON reports, report_idempotency, audit_logs TO heisei_report_tx_writer;
 GRANT EXECUTE ON FUNCTION report_idempotency_touch(uuid) TO heisei_report_tx_writer;
 
--- The reports staff policy references assignments.  This narrow column grant
--- is required even when the policy branch is not selected for tx_writer.
-GRANT SELECT (report_id, staff_user_id, revoked_at)
-  ON report_staff_assignments TO heisei_report_tx_writer;
-
 GRANT SELECT ON report_idempotency TO heisei_report_reconciler;
 
 DROP POLICY IF EXISTS reports_report_tx_writer_insert ON reports;

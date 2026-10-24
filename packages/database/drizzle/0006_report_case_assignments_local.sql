@@ -30,6 +30,10 @@ CREATE POLICY profiles_report_staff_reader_select ON profiles FOR SELECT
     AND id::text = current_setting('app.user_id', true));
 GRANT SELECT (report_id, staff_user_id, assigned_at, revoked_at)
   ON report_staff_assignments TO heisei_report_staff_reader;
+-- The reports staff policy references assignments even when the tx-writer
+-- branch is planned. Apply this narrow grant after the table exists.
+GRANT SELECT (report_id, staff_user_id, revoked_at)
+  ON report_staff_assignments TO heisei_report_tx_writer;
 
 DROP POLICY IF EXISTS report_staff_assignments_reader_select ON report_staff_assignments;
 CREATE POLICY report_staff_assignments_reader_select ON report_staff_assignments FOR SELECT
