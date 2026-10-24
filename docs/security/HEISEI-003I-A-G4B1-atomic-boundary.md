@@ -28,14 +28,13 @@ Status: **DRAFT / isolated PostgreSQL only**
 |advisory lock|report関数内の同一target受付を直列化できるが、既存profile/block writerが同じlockを取得しない限り完全なTOCTOU対策ではない。|
 |更新経路との明示的協調|最も強い候補。ただし既存block/profile status更新経路のlock契約変更が必要。|
 
-今回の関数はadvisory lockを採用したが、既存更新経路は未改修である。したがってG4-B1のTOCTOU完全解消はBLOCKEDとする。
+block mutation storeのINSERT/DELETE経路にも同じtarget lockを追加したため、実装済みblock更新経路は受付と協調する。profile_visibility変更APIとaccount_status変更APIは現時点で未実装であり、高権限SQLによる直接変更は通常運用の保証範囲から除外する。したがってG4-B1の完全PASSには、将来のprofile/status更新経路への同一契約適用が残る。
 
 ## 監査原子性
 
-同一関数境界では監査失敗時のrollbackを実証できた。一方、G4-A既存の
-`heisei_report_writer` には互換性のため直接report INSERT権限が残っており、
-監査なし保存経路を完全には除去していない。専用関数へ権限を移行するには、
-既存の保存呼出しをすべて関数境界へ移す追加変更が必要である。
+同一関数境界では監査失敗時のrollbackを実証できた。G4-B1 closureでは、
+`heisei_report_writer`のreports/audit_logs直接INSERT権限を撤去し、
+`report_create_atomic`のEXECUTEだけを残した。冪等性記録の権限は維持している。
 
 ## テスト結果
 
@@ -51,8 +50,7 @@ Status: **DRAFT / isolated PostgreSQL only**
 
 G4-B2へ進む前に、以下を承認・実装・検証する必要がある。
 
-1. profile status/visibilityとblock更新経路がreport受付と共有するlockまたはSERIALIZABLE契約
-2. report writerの直接INSERT撤去と専用関数への全面移行
-3. G3 ciphertext/idempotencyを同一保存境界へ接続
-4. commit失敗・timeout・deadlock時のRepository安全動作
+1. profile status/visibility更新経路が未実装のため、実運用経路としてのlock協調を追加検証
+2. G3 ciphertext/idempotencyを同一保存境界へ接続
+3. commit失敗・timeout・deadlock時のRepository安全動作
 

@@ -273,6 +273,10 @@ atomic_rollback_count="$(psql_file -Atqc "SELECT count(*) FROM reports WHERE rep
 test "$atomic_rollback_count" = 1
 echo "PASS: atomic audit failure rolls back report insert"
 
+# Legacy G4-A direct-write assertions below exercise the pre-closure schema.
+# This grant is test-only and is revoked again by the final roles.sql reapply.
+psql_file -c "GRANT INSERT ON reports, audit_logs TO heisei_report_writer" >/dev/null
+
 # Owner: safe profile columns are writable, but privileged columns are not.
 run_as heisei_app_login <<'SQL' >/dev/null
 SET ROLE heisei_app;
@@ -802,5 +806,30 @@ psql_file < "$repo_root/packages/database/drizzle/0001_profile_visibility.sql" >
 psql_file < "$repo_root/packages/database/drizzle/0002_report_foundation_g4a.sql" >/dev/null
 psql_file < "$repo_root/packages/database/drizzle/0003_report_atomic_boundary_g4b1.sql" >/dev/null
 psql_file < "$repo_root/packages/database/drizzle/roles.sql" >/dev/null
+expect_failure "report writer direct report INSERT after closure" run_as heisei_report_login <<'SQL'
+SET ROLE heisei_report_writer;
+SET app.user_id = '00000000-0000-4000-8000-000000000001';
+INSERT INTO reports (reporter_user_id, target_type, target_user_id, category, category_version)
+VALUES (current_setting('app.user_id')::uuid, 'user', '00000000-0000-4000-8000-000000000002', 'other', 'category-v1');
+SQL
+expect_failure "report writer direct audit INSERT after closure" run_as heisei_report_login <<'SQL'
+SET ROLE heisei_report_writer;
+SET app.user_id = '00000000-0000-4000-8000-000000000001';
+INSERT INTO audit_logs (actor_user_id, target_user_id, action, rule_version, request_id)
+VALUES (current_setting('app.user_id')::uuid, '00000000-0000-4000-8000-000000000002', 'report.create', '003i-g4b1', 'g4b1-direct-closed');
+SQL
+report_writer_insert_privilege="$(psql_file -Atqc "SELECT has_table_privilege('heisei_report_writer', 'public.reports', 'INSERT')")"
+report_writer_audit_privilege="$(psql_file -Atqc "SELECT has_table_privilege('heisei_report_writer', 'public.audit_logs', 'INSERT')")"
+report_writer_execute_privilege="$(psql_file -Atqc "SELECT has_function_privilege('heisei_report_writer', 'public.report_create_atomic(uuid,character varying,character varying,character varying)', 'EXECUTE')")"
+app_execute_privilege="$(psql_file -Atqc "SELECT has_function_privilege('heisei_app', 'public.report_create_atomic(uuid,character varying,character varying,character varying)', 'EXECUTE')")"
+tx_role_attributes="$(psql_file -Atqc "SELECT rolsuper::int || ':' || rolbypassrls::int || ':' || rolcanlogin::int FROM pg_roles WHERE rolname = 'heisei_report_tx_writer'")"
+tx_role_memberships="$(psql_file -Atqc "SELECT count(*) FROM pg_auth_members m JOIN pg_roles r ON r.oid = m.member WHERE r.rolname = 'heisei_report_tx_writer'")"
+test "$report_writer_insert_privilege" = f
+test "$report_writer_audit_privilege" = f
+test "$report_writer_execute_privilege" = t
+test "$app_execute_privilege" = f
+test "$tx_role_attributes" = '0:0:0'
+test "$tx_role_memberships" = 0
+echo "PASS: atomic closure privileges, role attributes and membership are restricted"
 echo "PASS: migration first application and reapplication"
 echo "PASS: PostgreSQL RLS integration checks"

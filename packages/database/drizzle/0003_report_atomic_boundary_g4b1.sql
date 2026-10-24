@@ -11,6 +11,10 @@ END $$;
 
 ALTER ROLE heisei_report_tx_writer NOLOGIN NOSUPERUSER NOBYPASSRLS;
 
+-- All report/audit writes must cross the atomic boundary. Idempotency writes
+-- remain with the report writer and are intentionally not revoked here.
+REVOKE INSERT ON reports, audit_logs FROM heisei_report_writer;
+
 REVOKE ALL ON profiles, blocks, reports, audit_logs FROM heisei_report_tx_writer;
 GRANT SELECT (id, auth_level, account_status, profile_visibility) ON profiles TO heisei_report_tx_writer;
 GRANT SELECT ON blocks TO heisei_report_tx_writer;

@@ -140,6 +140,16 @@ const blockDeleteByTargetSql = `
   RETURNING blocked_id::text AS target_user_id
 `;
 
+const targetLockSql = `
+  SELECT pg_advisory_xact_lock(hashtextextended($1::text, 0))
+`;
+
+const blockTargetLookupSql = `
+  SELECT blocked_id::text AS target_user_id
+  FROM blocks
+  WHERE id = $1::uuid
+`;
+
 const blockAuditSql = `
   INSERT INTO audit_logs (actor_user_id, target_user_id, action, reason, request_id, rule_version)
   VALUES ($1::uuid, $2::uuid, $3, NULL, $4, '003h')
@@ -167,6 +177,7 @@ export class PostgresBlockMutationStore implements BlockMutationStore {
     if (!this.executor.withBlockWriter) throw new Error('block writer is unavailable');
     try {
       return await this.executor.withBlockWriter(actorUserId, async (query) => {
+        await query.query(targetLockSql, [targetUserId]);
         const inserted = await query.query<{ block_id: string; target_user_id: string }>(blockInsertSql, [actorUserId, targetUserId]);
         const row = inserted.rows[0];
         if (!row) return;
@@ -185,6 +196,10 @@ export class PostgresBlockMutationStore implements BlockMutationStore {
     if (!isUuid(actorUserId) || !isUuid(blockId) || !requestId || requestId.length > 128) throw new Error('invalid block mutation');
     if (!this.executor.withBlockWriter) throw new Error('block writer is unavailable');
     return this.executor.withBlockWriter(actorUserId, async (query) => {
+      const target = await query.query<{ target_user_id: string }>(blockTargetLookupSql, [blockId]);
+      const targetUserId = target.rows[0]?.target_user_id;
+      if (!targetUserId) return;
+      await query.query(targetLockSql, [targetUserId]);
       const deleted = await query.query<{ target_user_id: string }>(blockDeleteSql, [blockId]);
       const row = deleted.rows[0];
       if (!row || typeof row.target_user_id !== 'string') return;
@@ -196,6 +211,7 @@ export class PostgresBlockMutationStore implements BlockMutationStore {
     if (!isUuid(actorUserId) || !isUuid(targetUserId) || !requestId || requestId.length > 128) throw new Error('invalid block mutation');
     if (!this.executor.withBlockWriter) throw new Error('block writer is unavailable');
     return this.executor.withBlockWriter(actorUserId, async (query) => {
+      await query.query(targetLockSql, [targetUserId]);
       const deleted = await query.query<{ target_user_id: string }>(blockDeleteByTargetSql, [actorUserId, targetUserId]);
       if (deleted.rows.length > 1) throw new Error('unexpected block row count');
       const row = deleted.rows[0];
