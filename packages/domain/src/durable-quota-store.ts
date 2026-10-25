@@ -8,6 +8,14 @@ import {
 
 const STATE_KEY = 'quota-state-v2';
 
+export type DurableQuotaStateSummary = {
+  actorId: string;
+  updatedAt: number;
+  uncertainCount: number;
+  reservations: Array<{ reservationId: string; status: QuotaState['reservations'][string]['status']; createdAt: number; expiresAt: number }>;
+  nextCursor?: string;
+};
+
 /** The small subset of DO Storage used by this adapter. */
 export interface DurableQuotaStorageLike {
   get<T>(key: string): Promise<T | undefined>;
@@ -68,6 +76,23 @@ export class DurableObjectQuotaStore implements QuotaStore {
       throw new Error('invalid durable quota state');
     }
     await this.storage.put(STATE_KEY, clone(state));
+  }
+
+  async inspect(actorId: string, limit: number, cursor?: string): Promise<DurableQuotaStateSummary> {
+    this.assertActor(actorId);
+    if (!Number.isSafeInteger(limit) || limit < 1 || limit > 50) throw new Error('invalid inspection limit');
+    const raw = await this.storage.get<unknown>(STATE_KEY);
+    if (raw === undefined) return { actorId: this.actorId, updatedAt: 0, uncertainCount: 0, reservations: [] };
+    if (!validateQuotaState(raw, this.actorId, undefined, this.options.maxStoredReservations)) throw new Error('invalid durable quota state');
+    const ids = Object.keys(raw.reservations).sort();
+    const start = cursor ? ids.findIndex((id) => id > cursor) : 0;
+    const offset = start < 0 ? ids.length : start;
+    const selected = ids.slice(offset, offset + limit);
+    const reservations = selected.map((reservationId) => {
+      const reservation = raw.reservations[reservationId]!;
+      return { reservationId, status: reservation.status, createdAt: reservation.createdAt, expiresAt: reservation.expiresAt };
+    });
+    return { actorId: this.actorId, updatedAt: raw.updatedAt, uncertainCount: raw.uncertainAdmissionCount, reservations, ...(offset + selected.length < ids.length ? { nextCursor: selected.at(-1) } : {}) };
   }
 
   async withActorLock<T>(actorId: string, operation: () => Promise<T>): Promise<T> {

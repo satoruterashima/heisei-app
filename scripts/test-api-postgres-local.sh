@@ -47,6 +47,8 @@ psql_file < "$repo_root/packages/database/drizzle/0002_report_foundation_g4a.sql
 psql_file < "$repo_root/packages/database/drizzle/0003_report_atomic_boundary_g4b1.sql" >/dev/null
 psql_file < "$repo_root/packages/database/drizzle/0004_report_repository_g4b2.sql" >/dev/null
 psql_file < "$repo_root/packages/database/drizzle/roles.sql" >/dev/null
+psql_file < "$repo_root/packages/database/drizzle/0007_report_operator_reconciliation.sql" >/dev/null
+psql_file < "$repo_root/packages/database/drizzle/roles.sql" >/dev/null
 # Reapply the local foundation and role grants to verify migration idempotency.
 psql_file < "$repo_root/packages/database/drizzle/0000_auth_foundation.sql" >/dev/null
 psql_file < "$repo_root/packages/database/drizzle/roles.sql" >/dev/null

@@ -40,6 +40,9 @@ BEGIN
   IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'heisei_report_staff_reader') THEN
     CREATE ROLE heisei_report_staff_reader NOLOGIN NOSUPERUSER NOBYPASSRLS;
   END IF;
+  IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'heisei_report_operator') THEN
+    CREATE ROLE heisei_report_operator NOLOGIN NOSUPERUSER NOBYPASSRLS;
+  END IF;
 END $$;
 
 -- G4-B2 supersedes the isolated pre-repository function when present. The
@@ -74,6 +77,14 @@ BEGIN
   IF to_regclass('public.report_staff_assignments') IS NOT NULL THEN
     EXECUTE 'REVOKE ALL ON report_staff_assignments FROM PUBLIC, heisei_report_staff_reader';
     EXECUTE 'GRANT SELECT (report_id, staff_user_id, assigned_at, revoked_at) ON report_staff_assignments TO heisei_report_staff_reader';
+  END IF;
+END $$;
+
+DO $$
+BEGIN
+  IF to_regclass('public.audit_logs') IS NOT NULL THEN
+    EXECUTE 'REVOKE ALL ON audit_logs FROM heisei_report_operator';
+    EXECUTE 'GRANT INSERT ON audit_logs TO heisei_report_operator';
   END IF;
 END $$;
 

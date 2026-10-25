@@ -154,3 +154,10 @@ Wrangler 3.114.17で次を確認した。
 - staff assignment管理者、復号、審査終了、処分、通知・開示
 - closed状態、legal hold、削除Job、監査保持と復元後再削除
 - 段階公開、停止、ロールバックの責任者と実施承認
+## OPS-RECONCILE-05 operator経路
+
+stagingの未解決quota状態は、公開WorkerのHTTP APIでは扱わない。Windowsローカルで、127.0.0.1に限定した一時operator WorkerをWranglerで起動し、`scripts/staging-operator-reconcile.mjs`からnonceとoperator IDを渡して、既存stagingのDO/Hyperdrive bindingへ接続する。
+
+既定はdry-runであり、actor UUID・reservation UUID・候補tuple（key version、scope digest、payload fingerprint）を明示する。DO inspectはactor単位、最大50件、cursorページングで、状態・時刻・件数だけを返す。完全一致で保存済みを確認した場合に限り`--apply`を許可し、照合失敗、0件、複数候補、DB/DO障害は`uncertain`を保持する。TTLでの解放・削除は行わない。
+
+監査は専用の`heisei_report_operator`（NOLOGIN・NOSUPERUSER・NOBYPASSRLS）から`report.reconcile`だけをappendする。raw Idempotency-Key、平文、暗号鍵、接続文字列は入力・応答・監査に記録しない。Remote Previewが利用できない環境では、実staging状態の推測走査や公開経路追加で回避せず、判定不能として保留する。

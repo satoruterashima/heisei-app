@@ -50,6 +50,11 @@ export class QuotaActor extends DurableObject<QuotaDoEnv> {
   async reconcile(actor: VerifiedQuotaActor, reservationId: Parameters<QuotaCoordinator['reconcile']>[1], observation: Parameters<QuotaCoordinator['reconcile']>[2]) {
     return this.coordinator(actor).reconcile(actor, reservationId, observation);
   }
+
+  async inspect(actor: VerifiedQuotaActor, limit = 50, cursor?: string) {
+    const store = new DurableObjectQuotaStore(actor, this.ctx.storage, { run: async <T>(operation: () => Promise<T>) => operation() }, { maxStoredReservations: MAX_STORED_RESERVATIONS });
+    return store.inspect(actor.userId, limit, cursor);
+  }
 }
 
 export default {

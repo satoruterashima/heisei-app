@@ -40,12 +40,13 @@ export class PostgresReportIdempotencyReadOnlyLookup implements ReportIdempotenc
              AND decode(candidate.scope_hex, 'hex') = ri.reporter_scope_digest
              AND decode(candidate.payload_hex, 'hex') = ri.payload_fingerprint
            WHERE ri.reporter_user_id = $1::uuid
-           LIMIT 1
+           LIMIT 2
         `, [actorUserId, JSON.stringify(input.candidates.map((candidate) => ({
           key_version: candidate.keyVersion,
           scope_hex: candidate.scopeHex,
           payload_hex: candidate.payloadHex,
         })))]);
+        if (response.rows.length > 1) return { result: 'unavailable' };
         const row = response.rows[0];
         return row ? { result: 'stored', candidate: { keyVersion: row.key_version, scopeHex: row.scope_hex, payloadHex: row.payload_hex } } : { result: 'not_found' };
       });

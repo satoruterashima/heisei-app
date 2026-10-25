@@ -21,9 +21,10 @@ const DEFAULT_ROLES = {
   reportWriter: 'heisei_report_writer',
   reportReconciler: 'heisei_report_reconciler',
   reportStaff: 'heisei_report_staff_reader',
+  reportOperator: 'heisei_report_operator',
   visibilityReader: 'heisei_visibility_reader',
 } as const;
-type FixedRoles = { app: string; identityWriter: string; profileWriter: string; blockWriter: string; reportWriter: string; reportReconciler: string; reportStaff: string; visibilityReader: string };
+type FixedRoles = { app: string; identityWriter: string; profileWriter: string; blockWriter: string; reportWriter: string; reportReconciler: string; reportStaff: string; reportOperator: string; visibilityReader: string };
 
 const SAFE_ROLE = /^[a-z_][a-z0-9_]*$/u;
 
@@ -33,7 +34,7 @@ function quoteRole(role: string): string {
 }
 
 function assertSettingName(name: string): void {
-  if (!/^app\.(?:user_id|auth_subject|visibility_target_id|staff_scope)$/u.test(name)) throw new Error('invalid RLS setting');
+  if (!/^app\.(?:user_id|auth_subject|visibility_target_id|staff_scope|operator_id)$/u.test(name)) throw new Error('invalid RLS setting');
 }
 
 type ConnectedClient = Pick<PoolClient, 'query'> & {
@@ -67,6 +68,7 @@ export class LocalTrustedPostgresExecutor implements TrustedPostgresExecutor {
     quoteRole(this.roles.reportWriter);
     quoteRole(this.roles.reportReconciler);
     quoteRole(this.roles.reportStaff);
+    quoteRole(this.roles.reportOperator);
     quoteRole(this.roles.visibilityReader);
     if (options.pool) {
       this.pool = options.pool;
@@ -135,6 +137,11 @@ export class LocalTrustedPostgresExecutor implements TrustedPostgresExecutor {
   async withReportStaff<T>(staffUserId: string, operation: (query: PostgresQueryExecutor) => Promise<T>): Promise<T> {
     if (!this.isUuid(staffUserId)) throw new Error('invalid staff context');
     return this.withTransaction(this.roles.reportStaff, [['app.user_id', staffUserId]], operation);
+  }
+
+  async withReportOperator<T>(operatorId: string, actorUserId: string, operation: (query: PostgresQueryExecutor) => Promise<T>): Promise<T> {
+    if (!/^[A-Za-z0-9._-]{1,80}$/u.test(operatorId) || !this.isUuid(actorUserId)) throw new Error('invalid operator context');
+    return this.withTransaction(this.roles.reportOperator, [['app.operator_id', operatorId], ['app.user_id', actorUserId]], operation);
   }
 
   async close(): Promise<void> {
