@@ -125,9 +125,21 @@ async function handle(request: Request, env: Env): Promise<Response> {
   if (input.cursor !== undefined && (typeof input.cursor !== 'string' || input.cursor.length > 80)) return Response.json({ error: 'invalid_request' }, { status: 400 });
   const actor = fixtureQuotaActor(actorId);
   const stub = env.QUOTA_ACTOR.get(env.QUOTA_ACTOR.idFromName(actorId));
-  const state = await stub.inspect(actor, 50, input.cursor as string | undefined);
+  let state: Awaited<ReturnType<QuotaActor['inspect']>>;
+  try {
+    state = await stub.inspect(actor, 50, input.cursor as string | undefined);
+  } catch {
+    console.warn(JSON.stringify({ event: 'operator_do_inspect_failed' }));
+    throw new Error('operator DO inspect failed');
+  }
   if (input.mode === 'inspect') {
-    const requestId = await audit(env, auth.operatorId, actorId, 'inspect');
+    let requestId: string;
+    try {
+      requestId = await audit(env, auth.operatorId, actorId, 'inspect');
+    } catch {
+      console.warn(JSON.stringify({ event: 'operator_audit_failed', decision: 'inspect' }));
+      throw new Error('operator inspect audit failed');
+    }
     return Response.json({ result: 'inspected', requestId, state: { actorId: state.actorId, updatedAt: state.updatedAt, uncertainCount: state.uncertainCount, nextCursor: state.nextCursor, reservations: state.reservations.map(({ reservationId, status, createdAt, expiresAt }) => ({ reservationId, status, createdAt, expiresAt })) } });
   }
   if (!uuid(input.reservationId)) return Response.json({ error: 'invalid_request' }, { status: 400 });
