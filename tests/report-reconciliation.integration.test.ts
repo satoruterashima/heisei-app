@@ -5,12 +5,13 @@ import { createLocalTrustedPostgresExecutor } from '../packages/database/src/loc
 
 const container = process.env.HEISEI_LOCAL_PG_CONTAINER;
 const databaseUrl = process.env.HEISEI_LOCAL_PG_URL;
-const actor = '00000000-0000-4000-8000-000000000001';
+const actor = '00000000-0000-4000-8000-000000000010';
 const scopeHex = 'a'.repeat(64);
 const payloadHex = 'b'.repeat(64);
 const requestId = 'reconcile-test-request';
-const reportId = '00000000-0000-4000-8000-000000000010';
-const target = '00000000-0000-4000-8000-000000000003';
+const reportId = '00000000-0000-4000-8000-000000000020';
+const target = '00000000-0000-4000-8000-000000000011';
+const other = '00000000-0000-4000-8000-000000000012';
 
 function adminSql(sql: string): string {
   if (!container) throw new Error('local database container is required');
@@ -24,7 +25,7 @@ describe.skipIf(!container || !databaseUrl)('actor-bound PostgreSQL report recon
     executor = await createLocalTrustedPostgresExecutor({ connectionString: databaseUrl, max: 2 });
   });
   beforeEach(() => {
-    adminSql(`DELETE FROM audit_logs WHERE request_id = '${requestId}'; DELETE FROM report_idempotency; DELETE FROM reports WHERE id = '${reportId}'::uuid;`);
+    adminSql(`DELETE FROM audit_logs WHERE request_id = '${requestId}'; DELETE FROM report_idempotency WHERE reporter_user_id IN ('${actor}'::uuid, '${other}'::uuid); DELETE FROM reports WHERE id = '${reportId}'::uuid OR (reporter_user_id IN ('${actor}'::uuid, '${other}'::uuid) AND target_user_id = '${target}'::uuid); INSERT INTO profiles (id, username, display_name) VALUES ('${actor}'::uuid, 'reconcile-actor-010', 'Reconcile actor'), ('${target}'::uuid, 'reconcile-target-011', 'Reconcile target'), ('${other}'::uuid, 'reconcile-other-012', 'Reconcile other') ON CONFLICT (id) DO NOTHING;`);
   });
   afterAll(async () => {
     await (executor as { close?: () => Promise<void> }).close?.();
@@ -39,7 +40,6 @@ describe.skipIf(!container || !databaseUrl)('actor-bound PostgreSQL report recon
 
   it('cannot write or read another actor through the reconciliation role', async () => {
     await expect(executor.withReportReconciler!(actor, (query) => query.query('INSERT INTO report_idempotency (reporter_user_id, reporter_scope_digest, payload_fingerprint, fingerprint_algorithm_version, fingerprint_key_version, expires_at) VALUES ($1::uuid, decode($2, \'hex\'), decode($3, \'hex\'), \'hmac-sha256-v1\', \'hmac-v1\', now() + interval \'30 days\')', [actor, scopeHex, payloadHex]))).rejects.toThrow();
-    const other = '00000000-0000-4000-8000-000000000002';
     adminSql(`INSERT INTO report_idempotency (reporter_user_id, reporter_scope_digest, payload_fingerprint, fingerprint_algorithm_version, fingerprint_key_version, expires_at) VALUES ('${other}'::uuid, decode('${scopeHex}', 'hex'), decode('${payloadHex}', 'hex'), 'hmac-sha256-v1', 'hmac-v1', now() + interval '30 days');`);
     const result = await new PostgresReportIdempotencyReadOnlyLookup(executor).lookup({ actorUserId: actor, requestId, candidates: [{ keyVersion: 'hmac-v1', scopeHex, payloadHex }] });
     expect(result).toEqual({ result: 'not_found' });

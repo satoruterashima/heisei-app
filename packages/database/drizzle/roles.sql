@@ -160,8 +160,20 @@ END $$;
 DO $$
 BEGIN
   IF to_regclass('public.report_idempotency') IS NOT NULL THEN
-    EXECUTE 'REVOKE ALL ON reports, report_idempotency, audit_logs FROM heisei_report_reconciler';
+    EXECUTE 'REVOKE ALL ON reports, report_idempotency FROM heisei_report_reconciler';
+    IF to_regclass('public.audit_logs') IS NOT NULL THEN
+      EXECUTE 'REVOKE ALL ON audit_logs FROM heisei_report_reconciler';
+    END IF;
     EXECUTE 'GRANT SELECT ON report_idempotency TO heisei_report_reconciler';
+    IF to_regclass('public.audit_logs') IS NOT NULL
+      AND EXISTS (
+        SELECT 1 FROM information_schema.columns
+        WHERE table_schema = 'public' AND table_name = 'audit_logs' AND column_name = 'report_id'
+      ) THEN
+      EXECUTE 'GRANT SELECT (actor_user_id, action, request_id, rule_version, report_id) ON audit_logs TO heisei_report_reconciler';
+    ELSIF to_regclass('public.audit_logs') IS NOT NULL THEN
+      EXECUTE 'GRANT SELECT (actor_user_id, action, request_id, rule_version) ON audit_logs TO heisei_report_reconciler';
+    END IF;
   END IF;
 END $$;
 
