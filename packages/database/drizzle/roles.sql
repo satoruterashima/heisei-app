@@ -68,6 +68,27 @@ BEGIN
   END IF;
 END $$;
 
+-- Operator audit inserts must be able to validate the actor foreign key and
+-- evaluate existing permissive audit policies without gaining report access.
+-- The runtime role is staging-specific; grant SET only when it exists.
+DO $$
+BEGIN
+  IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'heisei_staging_runtime') THEN
+    EXECUTE 'GRANT heisei_report_operator TO heisei_staging_runtime WITH SET TRUE';
+  END IF;
+  IF to_regclass('public.profiles') IS NOT NULL THEN
+    EXECUTE 'GRANT SELECT ON profiles TO heisei_report_operator';
+    EXECUTE 'DROP POLICY IF EXISTS profiles_operator_scoped_select ON profiles';
+    EXECUTE 'CREATE POLICY profiles_operator_scoped_select ON profiles FOR SELECT USING (current_user = ''heisei_report_operator'' AND id::text = current_setting(''app.user_id'', true))';
+  END IF;
+  IF to_regclass('public.report_staff_assignments') IS NOT NULL THEN
+    EXECUTE 'GRANT SELECT (report_id, staff_user_id, revoked_at) ON report_staff_assignments TO heisei_report_operator';
+  END IF;
+  IF to_regclass('public.reports') IS NOT NULL THEN
+    EXECUTE 'GRANT SELECT (id, target_user_id) ON reports TO heisei_report_operator';
+  END IF;
+END $$;
+
 -- G4-B2 supersedes the isolated pre-repository function when present. The
 -- legacy function remains in the schema for migration compatibility but is
 -- not an executable report-write path after the repository boundary exists.
