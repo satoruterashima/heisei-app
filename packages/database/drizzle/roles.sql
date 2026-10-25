@@ -48,8 +48,15 @@ END $$;
 DO $$
 BEGIN
   IF to_regclass('public.audit_logs') IS NOT NULL
-    AND to_regclass('public.report_idempotency') IS NOT NULL THEN
+    AND to_regclass('public.report_idempotency') IS NOT NULL
+    AND EXISTS (
+      SELECT 1 FROM information_schema.columns
+      WHERE table_schema = 'public' AND table_name = 'audit_logs' AND column_name = 'report_id'
+    ) THEN
     EXECUTE 'GRANT SELECT (actor_user_id, action, request_id, rule_version, report_id) ON audit_logs TO heisei_report_reconciler';
+  ELSIF to_regclass('public.audit_logs') IS NOT NULL
+    AND to_regclass('public.report_idempotency') IS NOT NULL THEN
+    EXECUTE 'GRANT SELECT (actor_user_id, action, request_id, rule_version) ON audit_logs TO heisei_report_reconciler';
   END IF;
 END $$;
 
