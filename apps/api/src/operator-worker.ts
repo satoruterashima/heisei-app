@@ -71,6 +71,14 @@ async function completeOperation(env: Env, operatorId: string, actorId: string, 
   });
 }
 
+type OperatorAuthFailure = 'config_missing' | 'header_missing' | 'jwt_invalid' | 'subject_denied' | 'email_denied' | 'ttl_denied';
+
+function rejectOperatorAuth(reason: OperatorAuthFailure): null {
+  // Keep diagnostics categorical. Never log the token, claims, subject, email, or configuration values.
+  console.warn(JSON.stringify({ event: 'operator_auth_rejected', reason }));
+  return null;
+}
+
 async function authorized(request: Request, env: Env): Promise<{ operatorId: string } | null> {
   const issuer = env.HEISEI_OPERATOR_ACCESS_ISSUER;
   const audience = env.HEISEI_OPERATOR_ACCESS_AUDIENCE;
@@ -79,14 +87,17 @@ async function authorized(request: Request, env: Env): Promise<{ operatorId: str
   const emailAllowlist = env.HEISEI_OPERATOR_ACCESS_EMAILS?.split(',').map((value) => value.trim().toLowerCase()).filter(Boolean) ?? [];
   const maxTtlSeconds = Number(env.HEISEI_OPERATOR_ACCESS_MAX_TTL_SECONDS ?? '3600');
   const token = request.headers.get('cf-access-jwt-assertion');
-  if (!issuer || !audience || !jwksUri || allowlist.length === 0 || !Number.isInteger(maxTtlSeconds) || maxTtlSeconds <= 0 || !token) return null;
+  if (!issuer || !audience || !jwksUri || allowlist.length === 0 || !Number.isInteger(maxTtlSeconds) || maxTtlSeconds <= 0) return rejectOperatorAuth('config_missing');
+  if (!token) return rejectOperatorAuth('header_missing');
   try {
     const claims = await new JwksJwtVerifier({ issuer, audience, jwksUri }).verify(token);
     const now = Date.now() / 1000;
-    if (!allowlist.includes(claims.sub) || (emailAllowlist.length > 0 && (!claims.email || !emailAllowlist.includes(claims.email))) || claims.exp - now > maxTtlSeconds || (claims.iat !== undefined && now - claims.iat > maxTtlSeconds)) return null;
+    if (!allowlist.includes(claims.sub)) return rejectOperatorAuth('subject_denied');
+    if (emailAllowlist.length > 0 && (!claims.email || !emailAllowlist.includes(claims.email))) return rejectOperatorAuth('email_denied');
+    if (claims.exp - now > maxTtlSeconds || (claims.iat !== undefined && now - claims.iat > maxTtlSeconds)) return rejectOperatorAuth('ttl_denied');
     return { operatorId: claims.sub };
   } catch {
-    return null;
+    return rejectOperatorAuth('jwt_invalid');
   }
 }
 
