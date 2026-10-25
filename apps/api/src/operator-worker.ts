@@ -12,6 +12,8 @@ type Env = {
   HEISEI_OPERATOR_ACCESS_AUDIENCE?: string;
   HEISEI_OPERATOR_ACCESS_JWKS_URI?: string;
   HEISEI_OPERATOR_ACCESS_SUBJECTS?: string;
+  HEISEI_OPERATOR_ACCESS_EMAILS?: string;
+  HEISEI_OPERATOR_ACCESS_MAX_TTL_SECONDS?: string;
   HEISEI_ENVIRONMENT?: string;
   [name: string]: unknown;
 };
@@ -74,11 +76,14 @@ async function authorized(request: Request, env: Env): Promise<{ operatorId: str
   const audience = env.HEISEI_OPERATOR_ACCESS_AUDIENCE;
   const jwksUri = env.HEISEI_OPERATOR_ACCESS_JWKS_URI;
   const allowlist = env.HEISEI_OPERATOR_ACCESS_SUBJECTS?.split(',').map((value) => value.trim()).filter(Boolean) ?? [];
+  const emailAllowlist = env.HEISEI_OPERATOR_ACCESS_EMAILS?.split(',').map((value) => value.trim().toLowerCase()).filter(Boolean) ?? [];
+  const maxTtlSeconds = Number(env.HEISEI_OPERATOR_ACCESS_MAX_TTL_SECONDS ?? '3600');
   const token = request.headers.get('cf-access-jwt-assertion');
-  if (!issuer || !audience || !jwksUri || allowlist.length === 0 || !token) return null;
+  if (!issuer || !audience || !jwksUri || emailAllowlist.length === 0 || !Number.isInteger(maxTtlSeconds) || maxTtlSeconds <= 0 || !token) return null;
   try {
     const claims = await new JwksJwtVerifier({ issuer, audience, jwksUri }).verify(token);
-    if (!claims.jti || claims.exp - Date.now() / 1000 > 300 || !allowlist.includes(claims.sub)) return null;
+    const now = Date.now() / 1000;
+    if (!claims.email || !emailAllowlist.includes(claims.email) || (allowlist.length > 0 && !allowlist.includes(claims.sub)) || claims.exp - now > maxTtlSeconds || (claims.iat !== undefined && now - claims.iat > maxTtlSeconds)) return null;
     return { operatorId: claims.sub };
   } catch {
     return null;

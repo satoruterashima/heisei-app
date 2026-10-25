@@ -158,11 +158,13 @@ export class JwksJwtVerifier implements JwtVerifier {
     const nbf = typeof payload.nbf === 'number' ? payload.nbf : undefined;
     const iat = typeof payload.iat === 'number' ? payload.iat : undefined;
     const jti = typeof payload.jti === 'string' ? payload.jti : undefined;
+    const email = typeof payload.email === 'string' && payload.email.trim() ? payload.email.trim().toLowerCase() : undefined;
     return {
       sub: payload.sub,
       iss: payload.iss,
       aud: payload.aud,
       exp: payload.exp,
+      ...(email === undefined ? {} : { email }),
       ...(nbf === undefined ? {} : { nbf }),
       ...(iat === undefined ? {} : { iat }),
       ...(jti === undefined ? {} : { jti }),

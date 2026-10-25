@@ -21,6 +21,8 @@ export type AuthIdentity = {
 
 export type JwtClaims = {
   sub: string;
+  /** Verified provider identity email, when the issuer includes one. */
+  email?: string;
   iss: string;
   aud: string | readonly string[];
   exp: number;
