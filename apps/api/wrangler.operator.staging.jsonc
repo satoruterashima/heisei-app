@@ -14,9 +14,8 @@
     "HEISEI_OPERATOR_ACCESS_ISSUER": "https://wispy-cloud-8bf6.cloudflareaccess.com",
     "HEISEI_OPERATOR_ACCESS_AUDIENCE": "f2ec28a33882c53a2ae8a8377b5e0d9dd65340a1868e3397daf5ae0b592135d9",
     "HEISEI_OPERATOR_ACCESS_JWKS_URI": "https://wispy-cloud-8bf6.cloudflareaccess.com/cdn-cgi/access/certs",
-    "HEISEI_OPERATOR_ACCESS_EMAILS": "satoru.terashima1988@gmail.com",
     "HEISEI_OPERATOR_ACCESS_SUBJECTS": "ee27e6b1-0205-53d2-8b36-306d093fcdd7",
-    "HEISEI_OPERATOR_ACCESS_MAX_TTL_SECONDS": "3600"
+    "HEISEI_OPERATOR_ACCESS_MAX_TTL_SECONDS": "3900"
   },
   "hyperdrive": [{ "binding": "HYPERDRIVE", "id": "c9e3f3014f9b4352a9dc5eac7a71334e" }],
   "durable_objects": {

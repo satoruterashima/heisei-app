@@ -79,11 +79,11 @@ async function authorized(request: Request, env: Env): Promise<{ operatorId: str
   const emailAllowlist = env.HEISEI_OPERATOR_ACCESS_EMAILS?.split(',').map((value) => value.trim().toLowerCase()).filter(Boolean) ?? [];
   const maxTtlSeconds = Number(env.HEISEI_OPERATOR_ACCESS_MAX_TTL_SECONDS ?? '3600');
   const token = request.headers.get('cf-access-jwt-assertion');
-  if (!issuer || !audience || !jwksUri || emailAllowlist.length === 0 || !Number.isInteger(maxTtlSeconds) || maxTtlSeconds <= 0 || !token) return null;
+  if (!issuer || !audience || !jwksUri || allowlist.length === 0 || !Number.isInteger(maxTtlSeconds) || maxTtlSeconds <= 0 || !token) return null;
   try {
     const claims = await new JwksJwtVerifier({ issuer, audience, jwksUri }).verify(token);
     const now = Date.now() / 1000;
-    if (!claims.email || !emailAllowlist.includes(claims.email) || (allowlist.length > 0 && !allowlist.includes(claims.sub)) || claims.exp - now > maxTtlSeconds || (claims.iat !== undefined && now - claims.iat > maxTtlSeconds)) return null;
+    if (!allowlist.includes(claims.sub) || (emailAllowlist.length > 0 && (!claims.email || !emailAllowlist.includes(claims.email))) || claims.exp - now > maxTtlSeconds || (claims.iat !== undefined && now - claims.iat > maxTtlSeconds)) return null;
     return { operatorId: claims.sub };
   } catch {
     return null;
