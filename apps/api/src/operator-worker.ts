@@ -168,6 +168,7 @@ async function handle(request: Request, env: Env): Promise<Response> {
   const observation = await reconciler.reconcile(actor, evidence.candidates as ReconciliationCandidate[]);
   if (observation !== 'stored' || input.dryRun !== false) {
     const requestId = await audit(env, auth.operatorId, actorId, observation === 'stored' ? 'match_dry_run' : `hold_${observation}`);
+    if (input.dryRun !== false) console.log(JSON.stringify({ event: 'operator_reconcile_dry_run', reservationId, observation }));
     return Response.json({ result: observation === 'stored' ? 'match_dry_run' : 'held', observation, requestId });
   }
   const operation = await prepareOperation(env, auth.operatorId, actorId, reservationId, evidence.requestId);
