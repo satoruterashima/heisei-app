@@ -90,7 +90,16 @@ async function authorized(request: Request, env: Env): Promise<{ operatorId: str
   if (!issuer || !audience || !jwksUri || allowlist.length === 0 || !Number.isInteger(maxTtlSeconds) || maxTtlSeconds <= 0) return rejectOperatorAuth('config_missing');
   if (!token) return rejectOperatorAuth('header_missing');
   try {
-    const claims = await new JwksJwtVerifier({ issuer, audience, jwksUri }).verify(token);
+    const claims = await new JwksJwtVerifier({
+      issuer,
+      audience,
+      jwksUri,
+      fetcher: async (input, init) => {
+        const response = await fetch(input, init);
+        console.warn(JSON.stringify({ event: 'operator_jwks_fetch', status: response.status }));
+        return response;
+      },
+    }).verify(token);
     const now = Date.now() / 1000;
     if (!allowlist.includes(claims.sub)) return rejectOperatorAuth('subject_denied');
     if (emailAllowlist.length > 0 && (!claims.email || !emailAllowlist.includes(claims.email))) return rejectOperatorAuth('email_denied');
