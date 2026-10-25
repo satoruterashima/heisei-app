@@ -1,6 +1,7 @@
 import {
   fixtureQuotaActor,
   type QuotaState,
+  type ReconciliationEvidence,
   type QuotaStore,
   type VerifiedQuotaActor,
   validateQuotaState,
@@ -12,7 +13,7 @@ export type DurableQuotaStateSummary = {
   actorId: string;
   updatedAt: number;
   uncertainCount: number;
-  reservations: Array<{ reservationId: string; status: QuotaState['reservations'][string]['status']; createdAt: number; expiresAt: number }>;
+  reservations: Array<{ reservationId: string; status: QuotaState['reservations'][string]['status']; createdAt: number; expiresAt: number; reconciliationEvidence?: ReconciliationEvidence }>;
   nextCursor?: string;
 };
 
@@ -90,7 +91,7 @@ export class DurableObjectQuotaStore implements QuotaStore {
     const selected = ids.slice(offset, offset + limit);
     const reservations = selected.map((reservationId) => {
       const reservation = raw.reservations[reservationId]!;
-      return { reservationId, status: reservation.status, createdAt: reservation.createdAt, expiresAt: reservation.expiresAt };
+      return { reservationId, status: reservation.status, createdAt: reservation.createdAt, expiresAt: reservation.expiresAt, ...(reservation.reconciliationEvidence === undefined ? {} : { reconciliationEvidence: reservation.reconciliationEvidence }) };
     });
     return { actorId: this.actorId, updatedAt: raw.updatedAt, uncertainCount: raw.uncertainAdmissionCount, reservations, ...(offset + selected.length < ids.length ? { nextCursor: selected.at(-1) } : {}) };
   }

@@ -3,7 +3,7 @@ import { cors } from 'hono/cors';
 import { AccessPolicyService, authMiddleware, authorize, isAccessOperation, optionalAuthMiddleware, type AccessPolicyInput, type AuthMiddlewareOptions, type AuthVariables, getAuth, getOptionalAuth } from '@heisei/auth';
 import type { JwtVerifier } from '@heisei/auth';
 import { DatabaseIdentityLoader, PostgresBlockMutationStore, PostgresBlockRelationStore, PostgresIdentityRecordStore, PostgresProfileStore, ReportRepository, prepareReportPayload, type BlockMutationStore, type ProfileRecord, type ProfileStore, type ReportStaffReader, type TrustedPostgresExecutor } from '@heisei/database';
-import { createQuotaReservationId, QuotaCoordinator, verifiedQuotaActorFromIdentity, type CoordinatorResult, type ReportOutcome, type VerifiedQuotaActor } from '@heisei/domain';
+import { createQuotaReservationId, QuotaCoordinator, verifiedQuotaActorFromIdentity, type CoordinatorResult, type ReportOutcome, type ReconciliationEvidence, type VerifiedQuotaActor } from '@heisei/domain';
 import { parseAndValidateReportPayload, REPORT_MAX_BODY_BYTES, validateIdempotencyKey, type ValidatedReportPayload } from '@heisei/validation';
 import { updateProfileSchema } from '@heisei/validation';
 
@@ -15,11 +15,11 @@ export type DatabaseApiOptions = {
   reportStaffReader?: ReportStaffReader;
 };
 
-export type ReportRepositoryPort = Pick<ReportRepository, 'createReport'>;
+export type ReportRepositoryPort = Pick<ReportRepository, 'createReport'> & { prepareReconciliationEvidence?: ReportRepository['prepareReconciliationEvidence'] };
 
 export type ReportQuotaBoundary = {
   recordRequest(actor: VerifiedQuotaActor): Promise<CoordinatorResult<'allowed' | 'rate_limited'>>;
-  reserveAdmission(actor: VerifiedQuotaActor, reservationId: Parameters<QuotaCoordinator['reserveAdmission']>[1]): Promise<CoordinatorResult<'reserved' | 'replayed' | 'idempotency_conflict' | 'rate_limited'>>;
+  reserveAdmission(actor: VerifiedQuotaActor, reservationId: Parameters<QuotaCoordinator['reserveAdmission']>[1], evidence?: Parameters<QuotaCoordinator['reserveAdmission']>[2]): Promise<CoordinatorResult<'reserved' | 'replayed' | 'idempotency_conflict' | 'rate_limited'>>;
   beginSave(actor: VerifiedQuotaActor, reservationId: Parameters<QuotaCoordinator['beginSave']>[1]): Promise<CoordinatorResult<'started' | 'replayed' | 'uncertain' | 'unavailable'>>;
   finalize(actor: VerifiedQuotaActor, reservationId: Parameters<QuotaCoordinator['finalize']>[1], outcome: ReportOutcome): Promise<CoordinatorResult<'committed' | 'cancelled' | 'uncertain' | 'replayed' | 'idempotency_conflict' | 'unavailable'>>;
 };
@@ -229,7 +229,11 @@ export function createApiApp(authOrOptions?: AuthMiddlewareOptions | ApiOptions)
     const prepared = prepareReportPayloadForRepository(parsedBody);
     if (!prepared) return c.json({ error: { code: 'service_unavailable', message: 'Report service is unavailable' }, requestId }, 503, headers);
     const reservationId = createQuotaReservationId();
-    const reserved = await options.reportQuota.reserveAdmission(quotaActor, reservationId).catch(() => ({ result: 'unavailable' as const }));
+    const evidence = options.reportRepository.prepareReconciliationEvidence
+      ? await options.reportRepository.prepareReconciliationEvidence(identity.userId, { ...prepared, idempotencyKey: keyValidation.normalized, requestId }).catch(() => null) as ReconciliationEvidence | null
+      : null;
+    if (!evidence) return c.json({ error: { code: 'service_unavailable', message: 'Report service is unavailable' }, requestId }, 503, headers);
+    const reserved = await options.reportQuota.reserveAdmission(quotaActor, reservationId, evidence).catch(() => ({ result: 'unavailable' as const }));
     if (reserved.result === 'unavailable') return c.json({ error: { code: 'service_unavailable', message: 'Report service is unavailable' }, requestId }, 503, headers);
     if (reserved.result === 'rate_limited') return c.json({ error: { code: 'rate_limited', message: 'Too many requests' }, requestId }, 429, headers);
     if (reserved.result !== 'reserved' && reserved.result !== 'replayed') return c.json({ error: { code: 'conflict', message: 'Report request cannot be accepted' }, requestId }, 409, headers);

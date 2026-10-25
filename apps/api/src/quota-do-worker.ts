@@ -31,8 +31,8 @@ export class QuotaActor extends DurableObject<QuotaDoEnv> {
     return this.coordinator(actor).recordRequest(actor);
   }
 
-  async reserveAdmission(actor: VerifiedQuotaActor, reservationId: Parameters<QuotaCoordinator['reserveAdmission']>[1]) {
-    return this.coordinator(actor).reserveAdmission(actor, reservationId);
+  async reserveAdmission(actor: VerifiedQuotaActor, reservationId: Parameters<QuotaCoordinator['reserveAdmission']>[1], evidence?: Parameters<QuotaCoordinator['reserveAdmission']>[2]) {
+    return this.coordinator(actor).reserveAdmission(actor, reservationId, evidence);
   }
 
   async beginSave(actor: VerifiedQuotaActor, reservationId: Parameters<QuotaCoordinator['beginSave']>[1]) {

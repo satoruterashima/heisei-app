@@ -32,6 +32,12 @@ export type QuotaReservation = {
   status: ReservationStatus;
   createdAt: number;
   expiresAt: number;
+  reconciliationEvidence?: ReconciliationEvidence;
+};
+
+export type ReconciliationEvidence = {
+  requestId: string;
+  candidates: Array<{ keyVersion: string; scopeHex: string; payloadHex: string }>;
 };
 
 export type QuotaState = {
@@ -97,6 +103,7 @@ function cloneState(state: QuotaState): QuotaState {
 }
 
 const RESERVATION_STATUSES: readonly ReservationStatus[] = ['reserved', 'in_flight', 'committed', 'cancelled', 'expired', 'uncertain'];
+const DIGEST = /^[0-9a-f]{64}$/iu;
 
 /** Strict persisted-state validation used by both fixture and durable adapters. */
 export function validateQuotaState(value: unknown, actorId: string, now?: number, maxStoredReservations?: number): value is QuotaState {
@@ -116,12 +123,22 @@ export function validateQuotaState(value: unknown, actorId: string, now?: number
   for (const [key, raw] of Object.entries(reservations)) {
     if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return false;
     const reservation = raw as Record<string, unknown>;
-    const reservationKeys = ['reservationId', 'actorId', 'status', 'createdAt', 'expiresAt'];
-    if (Object.keys(reservation).some((field) => !reservationKeys.includes(field)) || reservationKeys.some((field) => !(field in reservation))) return false;
+    const reservationKeys = ['reservationId', 'actorId', 'status', 'createdAt', 'expiresAt', 'reconciliationEvidence'];
+    const requiredReservationKeys = ['reservationId', 'actorId', 'status', 'createdAt', 'expiresAt'];
+    if (Object.keys(reservation).some((field) => !reservationKeys.includes(field)) || requiredReservationKeys.some((field) => !(field in reservation))) return false;
     if (reservation.reservationId !== key || typeof reservation.reservationId !== 'string' || !UUID_V4.test(reservation.reservationId)) return false;
     if (reservation.actorId !== actorId || typeof reservation.actorId !== 'string') return false;
     if (typeof reservation.status !== 'string' || !RESERVATION_STATUSES.includes(reservation.status as ReservationStatus)) return false;
     if (!Number.isSafeInteger(reservation.createdAt) || !Number.isSafeInteger(reservation.expiresAt) || (reservation.createdAt as number) < 0 || (reservation.expiresAt as number) < (reservation.createdAt as number)) return false;
+    if (reservation.reconciliationEvidence !== undefined) {
+      const evidence = reservation.reconciliationEvidence as Record<string, unknown>;
+      if (Object.keys(evidence).some((field) => !['requestId', 'candidates'].includes(field)) || typeof evidence.requestId !== 'string' || evidence.requestId.length < 1 || evidence.requestId.length > 128 || !Array.isArray(evidence.candidates) || evidence.candidates.length < 1 || evidence.candidates.length > 8) return false;
+      if (evidence.candidates.some((item) => {
+        if (!item || typeof item !== 'object') return true;
+        const candidate = item as Record<string, unknown>;
+        return Object.keys(candidate).some((field) => !['keyVersion', 'scopeHex', 'payloadHex'].includes(field)) || typeof candidate.keyVersion !== 'string' || candidate.keyVersion.length < 1 || candidate.keyVersion.length > 80 || typeof candidate.scopeHex !== 'string' || !DIGEST.test(candidate.scopeHex) || typeof candidate.payloadHex !== 'string' || !DIGEST.test(candidate.payloadHex);
+      })) return false;
+    }
     if (now !== undefined && (reservation.createdAt as number) > now) return false;
     if (reservation.status === 'reserved' || reservation.status === 'in_flight') reserved += 1;
     if (reservation.status === 'uncertain') uncertain += 1;
@@ -168,7 +185,7 @@ export class QuotaEngine {
     return { state, result: limited ? 'rate_limited' : 'allowed' };
   }
 
-  reserveAdmission(input: QuotaState, reservationId: string, now: number): QuotaStep<ReservationResult> {
+  reserveAdmission(input: QuotaState, reservationId: string, now: number, reconciliationEvidence?: ReconciliationEvidence): QuotaStep<ReservationResult> {
     assertTime(now);
     assertReservationId(reservationId);
     const state = this.expireReservations(input, now).state;
@@ -193,6 +210,7 @@ export class QuotaEngine {
       status: 'reserved',
       createdAt: now,
       expiresAt: now + this.config.reservationTtlMs,
+      ...(reconciliationEvidence === undefined ? {} : { reconciliationEvidence }),
     };
     state.updatedAt = now;
     return { state, result: 'reserved' };
@@ -329,8 +347,8 @@ export class QuotaCoordinator {
     return this.withState(actor, (state, now) => this.engine.recordRequest(state, now));
   }
 
-  async reserveAdmission(actor: VerifiedQuotaActor, reservationId: QuotaReservationId): Promise<CoordinatorResult<ReservationResult>> {
-    return this.withState(actor, (state, now) => this.engine.reserveAdmission(state, reservationId, now));
+  async reserveAdmission(actor: VerifiedQuotaActor, reservationId: QuotaReservationId, reconciliationEvidence?: ReconciliationEvidence): Promise<CoordinatorResult<ReservationResult>> {
+    return this.withState(actor, (state, now) => this.engine.reserveAdmission(state, reservationId, now, reconciliationEvidence));
   }
 
   async finalize(actor: VerifiedQuotaActor, reservationId: QuotaReservationId, outcome: ReportOutcome): Promise<CoordinatorResult<FinalizeResult>> {

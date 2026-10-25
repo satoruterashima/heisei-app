@@ -134,6 +134,17 @@ export class ReportRepository {
     private readonly crypto: ReportCryptoAdapter,
   ) {}
 
+  async prepareReconciliationEvidence(actorUserId: string, input: ReportRepositoryInput): Promise<{ requestId: string; candidates: Array<{ keyVersion: string; scopeHex: string; payloadHex: string }> } | null> {
+    if (!UUID.test(actorUserId) || !UUID_V4.test(input.idempotencyKey) || !input.requestId || input.requestId.length > 128) return null;
+    try {
+      const candidates = await Promise.all(this.crypto.fingerprintVersions.map((keyVersion) => this.crypto.createFingerprint({ actorUserId: actorUserId.toLowerCase(), idempotencyKey: input.idempotencyKey, payload: input, keyVersion })));
+      if (!validCandidates(candidates)) return null;
+      return { requestId: input.requestId, candidates: candidates.map(({ keyVersion, scopeHex, payloadHex }) => ({ keyVersion, scopeHex, payloadHex })) };
+    } catch {
+      return null;
+    }
+  }
+
   async createReport(actor: VerifiedReportActor, input: ReportRepositoryInput): Promise<ReportRepositoryResult> {
     const actorUserId = actor.userId.toLowerCase();
     const targetUserId = input.targetUserId.toLowerCase();

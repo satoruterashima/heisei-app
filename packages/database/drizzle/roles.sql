@@ -45,6 +45,22 @@ BEGIN
   END IF;
 END $$;
 
+DO $$
+BEGIN
+  IF to_regclass('public.audit_logs') IS NOT NULL
+    AND to_regclass('public.report_idempotency') IS NOT NULL THEN
+    EXECUTE 'GRANT SELECT (actor_user_id, action, request_id, rule_version, report_id) ON audit_logs TO heisei_report_reconciler';
+  END IF;
+END $$;
+
+DO $$
+BEGIN
+  IF to_regclass('public.report_reconciliation_operations') IS NOT NULL THEN
+    EXECUTE 'REVOKE ALL ON report_reconciliation_operations FROM PUBLIC, heisei_app, heisei_staff, heisei_report_reconciler';
+    EXECUTE 'GRANT SELECT, INSERT, UPDATE ON report_reconciliation_operations TO heisei_report_operator';
+  END IF;
+END $$;
+
 -- G4-B2 supersedes the isolated pre-repository function when present. The
 -- legacy function remains in the schema for migration compatibility but is
 -- not an executable report-write path after the repository boundary exists.

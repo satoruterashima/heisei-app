@@ -23,7 +23,7 @@ function appFor(result: ReportRepositoryResult = { result: 'accepted', reportId:
   return createApiApp({
     verifier: { verify: async (token) => token === 'valid' ? claims : { ...claims, sub: 'invalid-subject' } },
     identityLoader: { load: async (subject) => subject === claims.sub ? identity : null },
-    reportRepository: { createReport: vi.fn(async () => result) },
+    reportRepository: { createReport: vi.fn(async () => result), prepareReconciliationEvidence: vi.fn(async (_actor, input) => ({ requestId: input.requestId, candidates: [{ keyVersion: 'hmac-v1', scopeHex: 'a'.repeat(64), payloadHex: 'b'.repeat(64) }] })) },
     reportQuota,
   });
 }

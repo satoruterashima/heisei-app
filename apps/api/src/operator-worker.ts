@@ -1,4 +1,5 @@
 import { ReportReadOnlyReconciler, fixtureQuotaActor, type ReconciliationCandidate } from '@heisei/domain';
+import { JwksJwtVerifier } from '@heisei/auth';
 import { PostgresReportIdempotencyReadOnlyLookup, type TrustedPostgresExecutor } from '@heisei/database';
 import { createHyperdriveTrustedPostgresExecutor } from '../../../packages/database/src/local-postgres-executor.js';
 import { productionPostgresSettings } from '../../../packages/database/src/production-config.js';
@@ -7,7 +8,10 @@ import type { QuotaActor } from './quota-do-worker.js';
 type Env = {
   HYPERDRIVE: { connectionString: string };
   QUOTA_ACTOR: DurableObjectNamespace<QuotaActor>;
-  HEISEI_OPERATOR_NONCE?: string;
+  HEISEI_OPERATOR_ACCESS_ISSUER?: string;
+  HEISEI_OPERATOR_ACCESS_AUDIENCE?: string;
+  HEISEI_OPERATOR_ACCESS_JWKS_URI?: string;
+  HEISEI_OPERATOR_ACCESS_SUBJECTS?: string;
   HEISEI_ENVIRONMENT?: string;
   [name: string]: unknown;
 };
@@ -16,10 +20,6 @@ let executor: TrustedPostgresExecutor | undefined;
 let connectionString: string | undefined;
 
 function uuid(value: unknown): value is string { return typeof value === 'string' && /^[0-9a-f]{8}-(?:[0-9a-f]{4}-){3}[0-9a-f]{12}$/iu.test(value); }
-function digest(value: unknown): value is string { return typeof value === 'string' && /^[0-9a-f]{64}$/u.test(value); }
-function candidate(value: unknown): value is ReconciliationCandidate {
-  return !!value && typeof value === 'object' && typeof (value as ReconciliationCandidate).keyVersion === 'string' && (value as ReconciliationCandidate).keyVersion.length > 0 && (value as ReconciliationCandidate).keyVersion.length <= 80 && digest((value as ReconciliationCandidate).scopeHex) && digest((value as ReconciliationCandidate).payloadHex);
-}
 
 async function getExecutor(env: Env): Promise<TrustedPostgresExecutor> {
   const url = env.HYPERDRIVE?.connectionString;
@@ -41,23 +41,59 @@ async function audit(env: Env, operatorId: string, actorId: string, decision: st
   return requestId;
 }
 
-function authorized(request: Request, env: Env): { operatorId: string } | null {
-  const nonce = env.HEISEI_OPERATOR_NONCE;
-  const supplied = request.headers.get('x-heisei-operator-nonce');
-  const operatorId = request.headers.get('x-heisei-operator-id');
-  if (!nonce || supplied !== nonce || !operatorId || !/^[A-Za-z0-9._-]{1,80}$/u.test(operatorId)) return null;
-  return { operatorId };
+async function prepareOperation(env: Env, operatorId: string, actorId: string, reservationId: string, evidenceRequestId: string): Promise<{ operationId: string; applied: boolean }> {
+  const db = await getExecutor(env);
+  if (!db.withReportOperator) throw new Error('operator database boundary unavailable');
+  const operationId = crypto.randomUUID();
+  return db.withReportOperator(operatorId, actorId, async (query) => {
+    const existing = await query.query<{ operation_id: string; status: string }>('SELECT operation_id, status FROM report_reconciliation_operations WHERE actor_user_id = $1::uuid AND reservation_id = $2::uuid FOR UPDATE', [actorId, reservationId]);
+    if (existing.rows[0]?.status === 'applied') return { operationId: existing.rows[0].operation_id, applied: true };
+    const effectiveId = existing.rows[0]?.operation_id ?? operationId;
+    if (!existing.rows[0]) await query.query('INSERT INTO report_reconciliation_operations (operation_id, actor_user_id, reservation_id, request_id, status) VALUES ($1::uuid, $2::uuid, $3::uuid, $4, \'prepared\')', [effectiveId, actorId, reservationId, evidenceRequestId]);
+    await query.query(`INSERT INTO audit_logs (actor_user_id, action, reason, request_id, rule_version) VALUES ($1::uuid, 'report.reconcile', $2, $3, '003i-ops-reconcile-v1')`, [actorId, `operator:${operatorId};decision:prepared`, effectiveId]);
+    return { operationId: effectiveId, applied: false };
+  });
+}
+
+async function completeOperation(env: Env, operatorId: string, actorId: string, reservationId: string, operationId: string): Promise<void> {
+  const db = await getExecutor(env);
+  if (!db.withReportOperator) throw new Error('operator database boundary unavailable');
+  await db.withReportOperator(operatorId, actorId, async (query) => {
+    const updated = await query.query<{ operation_id: string }>(`UPDATE report_reconciliation_operations SET status = 'applied', updated_at = now() WHERE operation_id = $1::uuid AND actor_user_id = $2::uuid AND reservation_id = $3::uuid AND status = 'prepared' RETURNING operation_id`, [operationId, actorId, reservationId]);
+    if (updated.rows.length === 0) {
+      const existing = await query.query<{ status: string }>('SELECT status FROM report_reconciliation_operations WHERE operation_id = $1::uuid AND actor_user_id = $2::uuid FOR UPDATE', [operationId, actorId]);
+      if (existing.rows[0]?.status !== 'applied') throw new Error('reconciliation operation state mismatch');
+      return;
+    }
+    await query.query(`INSERT INTO audit_logs (actor_user_id, action, reason, request_id, rule_version) VALUES ($1::uuid, 'report.reconcile', $2, $3, '003i-ops-reconcile-v1')`, [actorId, `operator:${operatorId};decision:applied`, operationId]);
+  });
+}
+
+async function authorized(request: Request, env: Env): Promise<{ operatorId: string } | null> {
+  const issuer = env.HEISEI_OPERATOR_ACCESS_ISSUER;
+  const audience = env.HEISEI_OPERATOR_ACCESS_AUDIENCE;
+  const jwksUri = env.HEISEI_OPERATOR_ACCESS_JWKS_URI;
+  const allowlist = env.HEISEI_OPERATOR_ACCESS_SUBJECTS?.split(',').map((value) => value.trim()).filter(Boolean) ?? [];
+  const token = request.headers.get('cf-access-jwt-assertion');
+  if (!issuer || !audience || !jwksUri || allowlist.length === 0 || !token) return null;
+  try {
+    const claims = await new JwksJwtVerifier({ issuer, audience, jwksUri }).verify(token);
+    if (!claims.jti || claims.exp - Date.now() / 1000 > 300 || !allowlist.includes(claims.sub)) return null;
+    return { operatorId: claims.sub };
+  } catch {
+    return null;
+  }
 }
 
 async function handle(request: Request, env: Env): Promise<Response> {
   if (env.HEISEI_ENVIRONMENT !== 'staging') return Response.json({ error: 'unavailable' }, { status: 503 });
-  const auth = authorized(request, env);
+  const auth = await authorized(request, env);
   if (!auth) return Response.json({ error: 'unauthorized' }, { status: 401 });
   if (request.method !== 'POST' || new URL(request.url).pathname !== '/operator/reconcile') return Response.json({ error: 'not_found' }, { status: 404 });
   let body: unknown;
   try { body = await request.json(); } catch { return Response.json({ error: 'invalid_request' }, { status: 400 }); }
   if (!body || typeof body !== 'object') return Response.json({ error: 'invalid_request' }, { status: 400 });
-  const input = body as { mode?: unknown; actorId?: unknown; reservationId?: unknown; candidates?: unknown; dryRun?: unknown; cursor?: unknown };
+  const input = body as { mode?: unknown; actorId?: unknown; reservationId?: unknown; dryRun?: unknown; cursor?: unknown };
   if (!uuid(input.actorId)) return Response.json({ error: 'invalid_request' }, { status: 400 });
   const actorId = input.actorId;
   if (input.cursor !== undefined && (typeof input.cursor !== 'string' || input.cursor.length > 80)) return Response.json({ error: 'invalid_request' }, { status: 400 });
@@ -66,9 +102,9 @@ async function handle(request: Request, env: Env): Promise<Response> {
   const state = await stub.inspect(actor, 50, input.cursor as string | undefined);
   if (input.mode === 'inspect') {
     const requestId = await audit(env, auth.operatorId, actorId, 'inspect');
-    return Response.json({ result: 'inspected', requestId, state });
+    return Response.json({ result: 'inspected', requestId, state: { actorId: state.actorId, updatedAt: state.updatedAt, uncertainCount: state.uncertainCount, nextCursor: state.nextCursor, reservations: state.reservations.map(({ reservationId, status, createdAt, expiresAt }) => ({ reservationId, status, createdAt, expiresAt })) } });
   }
-  if (!uuid(input.reservationId) || !Array.isArray(input.candidates) || input.candidates.length < 1 || input.candidates.length > 8 || input.candidates.some((item) => !candidate(item))) return Response.json({ error: 'invalid_request' }, { status: 400 });
+  if (!uuid(input.reservationId)) return Response.json({ error: 'invalid_request' }, { status: 400 });
   const reservationId = input.reservationId;
   const reservation = state.reservations.find((item) => item.reservationId === reservationId);
   if (!reservation) {
@@ -79,14 +115,22 @@ async function handle(request: Request, env: Env): Promise<Response> {
     const requestId = await audit(env, auth.operatorId, actorId, 'not_eligible');
     return Response.json({ result: 'not_eligible', status: reservation.status, requestId });
   }
-  const reconciler = new ReportReadOnlyReconciler(new PostgresReportIdempotencyReadOnlyLookup(await getExecutor(env)));
-  const observation = await reconciler.reconcile(actor, input.candidates as ReconciliationCandidate[]);
+  const evidence = reservation.reconciliationEvidence;
+  if (!evidence) {
+    const requestId = await audit(env, auth.operatorId, actorId, 'hold_missing_evidence');
+    return Response.json({ result: 'held', observation: 'unknown', requestId });
+  }
+  const reconciler = new ReportReadOnlyReconciler({ lookup: async ({ actorUserId, candidates }) => new PostgresReportIdempotencyReadOnlyLookup(await getExecutor(env)).lookup({ actorUserId, requestId: evidence.requestId, candidates }) });
+  const observation = await reconciler.reconcile(actor, evidence.candidates as ReconciliationCandidate[]);
   if (observation !== 'stored' || input.dryRun !== false) {
     const requestId = await audit(env, auth.operatorId, actorId, observation === 'stored' ? 'match_dry_run' : `hold_${observation}`);
     return Response.json({ result: observation === 'stored' ? 'match_dry_run' : 'held', observation, requestId });
   }
+  const operation = await prepareOperation(env, auth.operatorId, actorId, reservationId, evidence.requestId);
+  if (operation.applied) return Response.json({ result: 'replayed', observation, operationId: operation.operationId });
   const result = await stub.reconcile(actor, reservationId as never, observation);
-  const requestId = await audit(env, auth.operatorId, actorId, 'committed');
+  await completeOperation(env, auth.operatorId, actorId, reservationId, operation.operationId);
+  const requestId = operation.operationId;
   return Response.json({ result: result.result, observation, requestId });
 }
 

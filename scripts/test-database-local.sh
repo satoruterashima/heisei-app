@@ -891,6 +891,8 @@ psql_file < "$repo_root/packages/database/drizzle/0006_report_case_assignments_l
 psql_file < "$repo_root/packages/database/drizzle/roles.sql" >/dev/null
 psql_file < "$repo_root/packages/database/drizzle/0007_report_operator_reconciliation.sql" >/dev/null
 psql_file < "$repo_root/packages/database/drizzle/roles.sql" >/dev/null
+psql_file < "$repo_root/packages/database/drizzle/0008_report_reconciliation_operations.sql" >/dev/null
+psql_file < "$repo_root/packages/database/drizzle/roles.sql" >/dev/null
 operator_role_attributes="$(psql_file -Atqc "SELECT rolsuper::int || ':' || rolbypassrls::int || ':' || rolcanlogin::int FROM pg_roles WHERE rolname = 'heisei_report_operator'")"
 test "$operator_role_attributes" = '0:0:0'
 operator_insert_privilege="$(psql_file -Atqc "SELECT has_table_privilege('heisei_report_operator', 'public.audit_logs', 'INSERT')")"
