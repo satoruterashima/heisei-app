@@ -153,15 +153,18 @@ async function handle(request: Request, env: Env): Promise<Response> {
   const reservation = state.reservations.find((item) => item.reservationId === reservationId);
   if (!reservation) {
     const requestId = await audit(env, auth.operatorId, actorId, 'not_found');
+    console.log(JSON.stringify({ event: 'operator_reconcile_result', result: 'not_found', reservationId }));
     return Response.json({ result: 'not_found', requestId, state: { uncertainCount: state.uncertainCount } });
   }
   if (reservation.status !== 'uncertain') {
     const requestId = await audit(env, auth.operatorId, actorId, 'not_eligible');
+    console.log(JSON.stringify({ event: 'operator_reconcile_result', result: 'not_eligible', reservationId, status: reservation.status }));
     return Response.json({ result: 'not_eligible', status: reservation.status, requestId });
   }
   const evidence = reservation.reconciliationEvidence;
   if (!evidence) {
     const requestId = await audit(env, auth.operatorId, actorId, 'hold_missing_evidence');
+    console.log(JSON.stringify({ event: 'operator_reconcile_result', result: 'held', observation: 'unknown', reservationId }));
     return Response.json({ result: 'held', observation: 'unknown', requestId });
   }
   const reconciler = new ReportReadOnlyReconciler({ lookup: async ({ actorUserId, candidates }) => new PostgresReportIdempotencyReadOnlyLookup(await getExecutor(env)).lookup({ actorUserId, requestId: evidence.requestId, candidates }) });
