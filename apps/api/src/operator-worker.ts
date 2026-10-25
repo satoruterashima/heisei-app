@@ -1,5 +1,5 @@
 import { ReportReadOnlyReconciler, fixtureQuotaActor, type ReconciliationCandidate } from '@heisei/domain';
-import { JwksJwtVerifier } from '@heisei/auth';
+import { JwksJwtVerifier, JwtVerificationError } from '@heisei/auth';
 import { PostgresReportIdempotencyReadOnlyLookup, type TrustedPostgresExecutor } from '@heisei/database';
 import { createHyperdriveTrustedPostgresExecutor } from '../../../packages/database/src/local-postgres-executor.js';
 import { productionPostgresSettings } from '../../../packages/database/src/production-config.js';
@@ -71,7 +71,7 @@ async function completeOperation(env: Env, operatorId: string, actorId: string, 
   });
 }
 
-type OperatorAuthFailure = 'config_missing' | 'header_missing' | 'jwt_invalid' | 'subject_denied' | 'email_denied' | 'ttl_denied';
+type OperatorAuthFailure = 'config_missing' | 'header_missing' | 'jwt_invalid' | 'jwt_malformed' | 'jwt_header_invalid' | 'jwt_claims_invalid' | 'jwt_claims_time_invalid' | 'jwt_jwks_unavailable' | 'jwt_key_not_found' | 'jwt_signature_invalid' | 'subject_denied' | 'email_denied' | 'ttl_denied';
 
 function rejectOperatorAuth(reason: OperatorAuthFailure): null {
   // Keep diagnostics categorical. Never log the token, claims, subject, email, or configuration values.
@@ -96,7 +96,8 @@ async function authorized(request: Request, env: Env): Promise<{ operatorId: str
     if (emailAllowlist.length > 0 && (!claims.email || !emailAllowlist.includes(claims.email))) return rejectOperatorAuth('email_denied');
     if (claims.exp - now > maxTtlSeconds || (claims.iat !== undefined && now - claims.iat > maxTtlSeconds)) return rejectOperatorAuth('ttl_denied');
     return { operatorId: claims.sub };
-  } catch {
+  } catch (error) {
+    if (error instanceof JwtVerificationError) return rejectOperatorAuth(`jwt_${error.reason}`);
     return rejectOperatorAuth('jwt_invalid');
   }
 }

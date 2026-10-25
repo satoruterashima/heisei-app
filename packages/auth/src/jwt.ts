@@ -10,12 +10,16 @@ export interface IdentityLoader {
   load(subject: string, claims: JwtClaims): Promise<AuthIdentity | null>;
 }
 
+export type JwtVerificationReason = 'malformed' | 'header_invalid' | 'claims_invalid' | 'claims_time_invalid' | 'jwks_unavailable' | 'key_not_found' | 'signature_invalid';
+
 export class JwtVerificationError extends Error {
   readonly code = 'invalid_token';
+  readonly reason: JwtVerificationReason;
 
-  constructor(message = 'The access token is invalid') {
+  constructor(message = 'The access token is invalid', reason: JwtVerificationReason = 'malformed') {
     super(message);
     this.name = 'JwtVerificationError';
+    this.reason = reason;
   }
 }
 
@@ -105,36 +109,41 @@ export class JwksJwtVerifier implements JwtVerifier {
     if (parts.length !== 3) throw new JwtVerificationError();
     const header = decodeJson(parts[0]);
     const payload = decodeJson(parts[1]);
-    if (!isRecord(header) || !isRecord(payload)) throw new JwtVerificationError();
+    if (!isRecord(header) || !isRecord(payload)) throw new JwtVerificationError(undefined, 'malformed');
 
     const alg = header.alg;
     const kid = header.kid;
     if (typeof alg !== 'string' || !this.options.allowedAlgorithms.includes(alg as JwtAlgorithm) || typeof kid !== 'string' || !kid || kid.length > 128) {
-      throw new JwtVerificationError();
+      throw new JwtVerificationError(undefined, 'header_invalid');
     }
     if (
       typeof payload.sub !== 'string' || !payload.sub.trim() ||
       payload.iss !== this.config.issuer || !isAudience(payload.aud) || !hasAudience(payload.aud, this.config.audience) ||
       typeof payload.exp !== 'number' || !Number.isFinite(payload.exp)
-    ) throw new JwtVerificationError();
+    ) throw new JwtVerificationError(undefined, 'claims_invalid');
 
     const now = this.options.now() / 1000;
     if (payload.exp <= now || (payload.nbf !== undefined && (typeof payload.nbf !== 'number' || !Number.isFinite(payload.nbf) || payload.nbf > now))) {
-      throw new JwtVerificationError();
+      throw new JwtVerificationError(undefined, 'claims_time_invalid');
     }
     for (const field of ['iat'] as const) {
       if (payload[field] !== undefined && (typeof payload[field] !== 'number' || !Number.isFinite(payload[field]))) {
-        throw new JwtVerificationError();
+        throw new JwtVerificationError(undefined, 'claims_time_invalid');
       }
     }
-    if (payload.jti !== undefined && (typeof payload.jti !== 'string' || !payload.jti)) throw new JwtVerificationError();
+    if (payload.jti !== undefined && (typeof payload.jti !== 'string' || !payload.jti)) throw new JwtVerificationError(undefined, 'claims_invalid');
     if (
       (typeof payload.iat === 'number' && (payload.iat > now || payload.iat > payload.exp)) ||
       (typeof payload.nbf === 'number' && payload.nbf >= payload.exp)
-    ) throw new JwtVerificationError();
+    ) throw new JwtVerificationError(undefined, 'claims_time_invalid');
 
-    const jwk = await this.findKey(kid, now * 1000);
-    if (!jwk || (typeof jwk.alg === 'string' && jwk.alg !== alg) || jwk.kty !== 'RSA') throw new JwtVerificationError();
+    let jwk: JsonWebKey | null;
+    try {
+      jwk = await this.findKey(kid, now * 1000);
+    } catch {
+      throw new JwtVerificationError(undefined, 'jwks_unavailable');
+    }
+    if (!jwk || (typeof jwk.alg === 'string' && jwk.alg !== alg) || jwk.kty !== 'RSA') throw new JwtVerificationError(undefined, 'key_not_found');
     let key: CryptoKey;
     try {
       key = await crypto.subtle.importKey(
@@ -149,10 +158,10 @@ export class JwksJwtVerifier implements JwtVerifier {
         decodeBase64Url(parts[2]) as unknown as BufferSource,
         toBytes(`${parts[0]}.${parts[1]}`) as unknown as BufferSource,
       );
-      if (!valid) throw new JwtVerificationError();
+      if (!valid) throw new JwtVerificationError(undefined, 'signature_invalid');
     } catch (error) {
       if (error instanceof JwtVerificationError) throw error;
-      throw new JwtVerificationError();
+      throw new JwtVerificationError(undefined, 'signature_invalid');
     }
 
     const nbf = typeof payload.nbf === 'number' ? payload.nbf : undefined;
