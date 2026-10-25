@@ -79,6 +79,11 @@ function rejectOperatorAuth(reason: OperatorAuthFailure): null {
   return null;
 }
 
+function safeFailureClass(error: unknown): string {
+  if (error && typeof error === 'object' && 'code' in error && typeof error.code === 'string' && /^[0-9A-Z]{5}$/u.test(error.code)) return `db_${error.code}`;
+  return error instanceof Error ? error.name : 'unknown';
+}
+
 async function authorized(request: Request, env: Env): Promise<{ operatorId: string } | null> {
   const issuer = env.HEISEI_OPERATOR_ACCESS_ISSUER;
   const audience = env.HEISEI_OPERATOR_ACCESS_AUDIENCE;
@@ -128,16 +133,16 @@ async function handle(request: Request, env: Env): Promise<Response> {
   let state: Awaited<ReturnType<QuotaActor['inspect']>>;
   try {
     state = await stub.inspect(actor, 50, input.cursor as string | undefined);
-  } catch {
-    console.warn(JSON.stringify({ event: 'operator_do_inspect_failed' }));
+  } catch (error) {
+    console.warn(JSON.stringify({ event: 'operator_do_inspect_failed', errorClass: safeFailureClass(error) }));
     throw new Error('operator DO inspect failed');
   }
   if (input.mode === 'inspect') {
     let requestId: string;
     try {
       requestId = await audit(env, auth.operatorId, actorId, 'inspect');
-    } catch {
-      console.warn(JSON.stringify({ event: 'operator_audit_failed', decision: 'inspect' }));
+    } catch (error) {
+      console.warn(JSON.stringify({ event: 'operator_audit_failed', decision: 'inspect', errorClass: safeFailureClass(error) }));
       throw new Error('operator inspect audit failed');
     }
     return Response.json({ result: 'inspected', requestId, state: { actorId: state.actorId, updatedAt: state.updatedAt, uncertainCount: state.uncertainCount, nextCursor: state.nextCursor, reservations: state.reservations.map(({ reservationId, status, createdAt, expiresAt }) => ({ reservationId, status, createdAt, expiresAt })) } });
