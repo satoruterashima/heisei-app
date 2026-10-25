@@ -145,7 +145,7 @@ async function handle(request: Request, env: Env): Promise<Response> {
       console.warn(JSON.stringify({ event: 'operator_audit_failed', decision: 'inspect', errorClass: safeFailureClass(error) }));
       throw new Error('operator inspect audit failed');
     }
-    console.log(JSON.stringify({ event: 'operator_inspect_completed', uncertainCount: state.uncertainCount, reservationCount: state.reservations.length, hasNextCursor: Boolean(state.nextCursor) }));
+    console.log(JSON.stringify({ event: 'operator_inspect_completed', uncertainCount: state.uncertainCount, reservationCount: state.reservations.length, hasNextCursor: Boolean(state.nextCursor), uncertainReservationIds: state.reservations.filter((reservation) => reservation.status === 'uncertain').map((reservation) => reservation.reservationId) }));
     return Response.json({ result: 'inspected', requestId, state: { actorId: state.actorId, updatedAt: state.updatedAt, uncertainCount: state.uncertainCount, nextCursor: state.nextCursor, reservations: state.reservations.map(({ reservationId, status, createdAt, expiresAt }) => ({ reservationId, status, createdAt, expiresAt })) } });
   }
   if (!uuid(input.reservationId)) return Response.json({ error: 'invalid_request' }, { status: 400 });
