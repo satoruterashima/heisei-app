@@ -35,6 +35,8 @@ jobs:
         run: pnpm --config.verifyDepsBeforeRun=warn lint
       - name: Unit tests
         run: pnpm --config.verifyDepsBeforeRun=warn test
+      - name: Durable Objects runtime tests
+        run: pnpm --config.verifyDepsBeforeRun=warn test:do
       - name: PostgreSQL RLS integration (disposable local Docker)
         run: bash scripts/test-database-local.sh
       - name: Real JWT-to-PostgreSQL API integration (disposable Docker)

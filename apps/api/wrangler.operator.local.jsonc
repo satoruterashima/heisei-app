@@ -1,0 +1,15 @@
+{
+  "name": "heisei-operator-local",
+  "main": "src/operator-worker.ts",
+  "compatibility_date": "2025-01-01",
+  "compatibility_flags": ["nodejs_compat"],
+  "vars": {
+    "HEISEI_ENVIRONMENT": "staging",
+    "HEISEI_DATABASE_POOL_MAX": "2",
+    "HEISEI_DATABASE_CONNECT_TIMEOUT_MS": "5000",
+    "HEISEI_DATABASE_STATEMENT_TIMEOUT_MS": "10000",
+    "HEISEI_DATABASE_QUERY_TIMEOUT_MS": "10000"
+  },
+  "hyperdrive": [{ "binding": "HYPERDRIVE", "id": "c9e3f3014f9b4352a9dc5eac7a71334e" }],
+  "durable_objects": { "bindings": [{ "name": "QUOTA_ACTOR", "class_name": "QuotaActor", "script_name": "heisei-api-staging" }] }
+}

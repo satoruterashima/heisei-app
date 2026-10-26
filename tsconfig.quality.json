@@ -8,5 +8,5 @@
     "noEmit": true,
     "types": ["node"]
   },
-  "include": ["tests/**/*.ts", "vitest.config.mts"]
+  "include": ["tests/**/*.ts", "vitest.config.mts", "vitest.do.config.mts", "types/cloudflare-local.d.ts"]
 }

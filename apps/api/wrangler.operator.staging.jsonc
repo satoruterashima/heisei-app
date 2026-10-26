@@ -1,0 +1,24 @@
+{
+  "$schema": "../../node_modules/wrangler/config-schema.json",
+  "name": "heisei-operator-staging",
+  "main": "src/operator-worker.ts",
+  "compatibility_date": "2026-10-24",
+  "compatibility_flags": ["nodejs_compat"],
+  "workers_dev": true,
+  "vars": {
+    "HEISEI_ENVIRONMENT": "staging",
+    "HEISEI_DATABASE_POOL_MAX": "2",
+    "HEISEI_DATABASE_CONNECT_TIMEOUT_MS": "5000",
+    "HEISEI_DATABASE_STATEMENT_TIMEOUT_MS": "10000",
+    "HEISEI_DATABASE_QUERY_TIMEOUT_MS": "10000",
+    "HEISEI_OPERATOR_ACCESS_ISSUER": "https://wispy-cloud-8bf6.cloudflareaccess.com",
+    "HEISEI_OPERATOR_ACCESS_AUDIENCE": "f2ec28a33882c53a2ae8a8377b5e0d9dd65340a1868e3397daf5ae0b592135d9",
+    "HEISEI_OPERATOR_ACCESS_JWKS_URI": "https://wispy-cloud-8bf6.cloudflareaccess.com/cdn-cgi/access/certs",
+    "HEISEI_OPERATOR_ACCESS_SUBJECTS": "ee27e6b1-0205-53d2-8b36-306d093fcdd7",
+    "HEISEI_OPERATOR_ACCESS_MAX_TTL_SECONDS": "3900"
+  },
+  "hyperdrive": [{ "binding": "HYPERDRIVE", "id": "c9e3f3014f9b4352a9dc5eac7a71334e" }],
+  "durable_objects": {
+    "bindings": [{ "name": "QUOTA_ACTOR", "class_name": "QuotaActor", "script_name": "heisei-api-staging" }]
+  }
+}
