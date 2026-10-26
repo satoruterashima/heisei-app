@@ -1,0 +1,35 @@
+{
+  "$schema": "../../node_modules/wrangler/config-schema.json",
+  "name": "heisei-reconcile-proof-operator",
+  "main": "src/operator-worker.ts",
+  "compatibility_date": "2026-10-26",
+  "compatibility_flags": ["nodejs_compat"],
+  "workers_dev": true,
+  "vars": {
+    "HEISEI_ENVIRONMENT": "staging",
+    "HEISEI_PROOF_RUNNER": "true",
+    "HEISEI_QUOTA_CONFIG_SOURCE": "reconcile-proof-test-config",
+    "HEISEI_QUOTA_SHORT_WINDOW_MS": "60000",
+    "HEISEI_QUOTA_SHORT_REQUEST_LIMIT": "10",
+    "HEISEI_QUOTA_LONG_WINDOW_MS": "86400000",
+    "HEISEI_QUOTA_LONG_REQUEST_LIMIT": "100",
+    "HEISEI_QUOTA_ADMISSION_WINDOW_MS": "86400000",
+    "HEISEI_QUOTA_NEW_ADMISSION_LIMIT": "20",
+    "HEISEI_QUOTA_MAX_ACTIVE_RESERVATIONS": "5",
+    "HEISEI_QUOTA_RESERVATION_TTL_MS": "60000",
+    "HEISEI_QUOTA_STATE_RETENTION_MS": "2592000000",
+    "HEISEI_DATABASE_POOL_MAX": "2",
+    "HEISEI_DATABASE_CONNECT_TIMEOUT_MS": "5000",
+    "HEISEI_DATABASE_STATEMENT_TIMEOUT_MS": "10000",
+    "HEISEI_DATABASE_QUERY_TIMEOUT_MS": "15000",
+    "HEISEI_OPERATOR_ACCESS_ISSUER": "https://wispy-cloud-8bf6.cloudflareaccess.com",
+    "HEISEI_OPERATOR_ACCESS_AUDIENCE": "9e75aab15bcf8d9da9f532907758a0f89178882917baf11c03ff6713ca7589d2",
+    "HEISEI_OPERATOR_ACCESS_JWKS_URI": "https://wispy-cloud-8bf6.cloudflareaccess.com/cdn-cgi/access/certs",
+    "HEISEI_OPERATOR_ACCESS_SUBJECTS": "ee27e6b1-0205-53d2-8b36-306d093fcdd7",
+    "HEISEI_OPERATOR_ACCESS_MAX_TTL_SECONDS": "3900"
+  },
+  "hyperdrive": [{ "binding": "HYPERDRIVE", "id": "a549371b442c4db0a9a3e5e3ee685b80" }],
+  "durable_objects": {
+    "bindings": [{ "name": "QUOTA_ACTOR", "class_name": "QuotaActor", "script_name": "heisei-reconcile-proof" }]
+  }
+}

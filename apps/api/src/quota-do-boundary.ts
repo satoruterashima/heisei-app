@@ -1,9 +1,9 @@
 import type { ReportQuotaBoundary } from './index.js';
-import type { QuotaCoordinator, ReportOutcome, VerifiedQuotaActor } from '@heisei/domain';
+import type { QuotaCoordinator, ReconciliationEvidence, ReportOutcome, VerifiedQuotaActor } from '@heisei/domain';
 
 type QuotaActorRpc = {
   recordRequest(actor: VerifiedQuotaActor): ReturnType<QuotaCoordinator['recordRequest']>;
-  reserveAdmission(actor: VerifiedQuotaActor, reservationId: Parameters<QuotaCoordinator['reserveAdmission']>[1]): ReturnType<QuotaCoordinator['reserveAdmission']>;
+  reserveAdmission(actor: VerifiedQuotaActor, reservationId: Parameters<QuotaCoordinator['reserveAdmission']>[1], evidence?: ReconciliationEvidence): ReturnType<QuotaCoordinator['reserveAdmission']>;
   beginSave(actor: VerifiedQuotaActor, reservationId: Parameters<QuotaCoordinator['beginSave']>[1]): ReturnType<QuotaCoordinator['beginSave']>;
   finalize(actor: VerifiedQuotaActor, reservationId: Parameters<QuotaCoordinator['finalize']>[1], outcome: ReportOutcome): ReturnType<QuotaCoordinator['finalize']>;
 };
@@ -22,7 +22,7 @@ export class DurableObjectQuotaBoundary implements ReportQuotaBoundary {
   }
 
   recordRequest(actor: VerifiedQuotaActor) { return this.actor(actor).recordRequest(actor); }
-  reserveAdmission(actor: VerifiedQuotaActor, reservationId: Parameters<QuotaCoordinator['reserveAdmission']>[1]) { return this.actor(actor).reserveAdmission(actor, reservationId); }
+  reserveAdmission(actor: VerifiedQuotaActor, reservationId: Parameters<QuotaCoordinator['reserveAdmission']>[1], evidence?: ReconciliationEvidence) { return this.actor(actor).reserveAdmission(actor, reservationId, evidence); }
   beginSave(actor: VerifiedQuotaActor, reservationId: Parameters<QuotaCoordinator['beginSave']>[1]) { return this.actor(actor).beginSave(actor, reservationId); }
   finalize(actor: VerifiedQuotaActor, reservationId: Parameters<QuotaCoordinator['finalize']>[1], outcome: ReportOutcome) { return this.actor(actor).finalize(actor, reservationId, outcome); }
 }

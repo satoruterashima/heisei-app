@@ -10,7 +10,7 @@ import { updateProfileSchema } from '@heisei/validation';
 export type DatabaseApiOptions = {
   verifier: JwtVerifier;
   executor: TrustedPostgresExecutor;
-  reportRepository?: ReportRepository;
+  reportRepository?: ReportRepositoryPort;
   reportQuota?: ReportQuotaBoundary;
   reportStaffReader?: ReportStaffReader;
 };

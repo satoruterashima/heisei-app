@@ -31,7 +31,7 @@ describe('production configuration boundaries', () => {
   it('imports only explicit 32-byte secret versions and fails closed when missing', async () => {
     const key = btoa(String.fromCharCode(...new Uint8Array(32))).replace(/\+/gu, '-').replace(/\//gu, '_').replace(/=+$/u, '');
     const provider = new SecretReportKeyProvider({
-      source: { get: (name) => name.endsWith('_v1') ? key : undefined },
+      source: { get: (name) => name.endsWith('_V1') ? key : undefined },
       encryptionKeyVersions: ['v1'], fingerprintKeyVersions: ['v1'],
     });
     expect((await provider.getEncryptionKey('v1')).type).toBe('secret');

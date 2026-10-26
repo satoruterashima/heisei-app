@@ -50,7 +50,7 @@ export class SecretReportKeyProvider implements ReportKeyProvider {
   }
 
   private async importKey(kind: 'encryption' | 'fingerprint', version: string, algorithm: 'AES-GCM' | 'HMAC'): Promise<CryptoKey> {
-    const value = await this.options.source.get(`HEISEI_REPORT_${kind.toUpperCase()}_KEY_${version}`);
+    const value = await this.options.source.get(`HEISEI_REPORT_${kind.toUpperCase()}_KEY_${version.toUpperCase()}`);
     if (!value) throw new ReportCryptoError();
     const bytes = decodeBase64Url(value);
     if (bytes.byteLength !== 32) throw new ReportCryptoError();
