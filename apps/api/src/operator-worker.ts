@@ -15,7 +15,6 @@ type Env = {
   HEISEI_OPERATOR_ACCESS_EMAILS?: string;
   HEISEI_OPERATOR_ACCESS_MAX_TTL_SECONDS?: string;
   HEISEI_ENVIRONMENT?: string;
-  HEISEI_PROOF_RUNNER?: string;
   [name: string]: unknown;
 };
 
@@ -121,18 +120,6 @@ async function handle(request: Request, env: Env): Promise<Response> {
   if (env.HEISEI_ENVIRONMENT !== 'staging') return Response.json({ error: 'unavailable' }, { status: 503 });
   const auth = await authorized(request, env);
   if (!auth) return Response.json({ error: 'unauthorized' }, { status: 401 });
-  if (request.method === 'GET' && new URL(request.url).pathname === '/__proof/runner' && env.HEISEI_PROOF_RUNNER === 'true') {
-    return new Response('<!doctype html><meta charset="utf-8"><title>HEISEI operator proof runner</title><p>隔離Proof環境の認証済みoperator操作</p><a href="/__proof/inspect">inspect</a>', { headers: { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-store' } });
-  }
-  const proofUrl = new URL(request.url);
-  if (env.HEISEI_PROOF_RUNNER === 'true' && request.method === 'GET' && (proofUrl.pathname === '/__proof/inspect' || proofUrl.pathname === '/__proof/reconcile')) {
-    const actorId = '40000000-0000-4000-8000-000000000011';
-    const reservationId = proofUrl.searchParams.get('reservationId');
-    const body = proofUrl.pathname === '/__proof/inspect'
-      ? { mode: 'inspect', actorId }
-      : { mode: 'reconcile', actorId, reservationId, dryRun: proofUrl.searchParams.get('dryRun') !== 'false' };
-    request = new Request(new URL('/operator/reconcile', request.url), { method: 'POST', headers: { 'content-type': 'application/json', 'cf-access-jwt-assertion': request.headers.get('cf-access-jwt-assertion') ?? '' }, body: JSON.stringify(body) });
-  }
   if (request.method !== 'POST' || new URL(request.url).pathname !== '/operator/reconcile') return Response.json({ error: 'not_found' }, { status: 404 });
   let body: unknown;
   try { body = await request.json(); } catch { return Response.json({ error: 'invalid_request' }, { status: 400 }); }
@@ -159,7 +146,7 @@ async function handle(request: Request, env: Env): Promise<Response> {
       throw new Error('operator inspect audit failed');
     }
     console.log(JSON.stringify({ event: 'operator_inspect_completed', uncertainCount: state.uncertainCount, reservationCount: state.reservations.length, hasNextCursor: Boolean(state.nextCursor), uncertainReservationIds: state.reservations.filter((reservation) => reservation.status === 'uncertain').map((reservation) => reservation.reservationId) }));
-    return Response.json({ result: 'inspected', requestId, state: { actorId: state.actorId, updatedAt: state.updatedAt, uncertainCount: state.uncertainCount, nextCursor: state.nextCursor, reservations: state.reservations.map(({ reservationId, status, createdAt, expiresAt, reconciliationEvidence }) => ({ reservationId, status, createdAt, expiresAt, ...(env.HEISEI_PROOF_RUNNER === 'true' && reconciliationEvidence ? { evidenceRequestId: reconciliationEvidence.requestId, evidenceCandidateCount: reconciliationEvidence.candidates.length } : {}) })) } });
+    return Response.json({ result: 'inspected', requestId, state: { actorId: state.actorId, updatedAt: state.updatedAt, uncertainCount: state.uncertainCount, nextCursor: state.nextCursor, reservations: state.reservations.map(({ reservationId, status, createdAt, expiresAt }) => ({ reservationId, status, createdAt, expiresAt })) } });
   }
   if (!uuid(input.reservationId)) return Response.json({ error: 'invalid_request' }, { status: 400 });
   const reservationId = input.reservationId;
